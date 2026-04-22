@@ -812,9 +812,9 @@ app = Starlette(
 
 
 if __name__ == "__main__":
-    log.info("MCP endpoint:     http://[::]:%d/mcp  (CF Access: %s)", PORT, "yes" if CF_ACCESS_AUD else "NO")
-    log.info("Webhook receiver: http://[::]:%d/webhook  (secret: %s)", PORT, "yes" if WEBHOOK_SECRET else "NO")
-    log.info("Coach endpoint:   http://[::]:%d/coach  (auth: %s)", PORT, "yes" if COACH_SECRET else "NO")
-    log.info("Health endpoint:  http://[::]:%d/health", PORT)
+    log.info("MCP endpoint:     http://0.0.0.0:%d/mcp  (CF Access: %s)", PORT, "yes" if CF_ACCESS_AUD else "NO")
+    log.info("Webhook receiver: http://0.0.0.0:%d/webhook  (secret: %s)", PORT, "yes" if WEBHOOK_SECRET else "NO")
+    log.info("Coach endpoint:   http://0.0.0.0:%d/coach  (auth: %s)", PORT, "yes" if COACH_SECRET else "NO")
+    log.info("Health endpoint:  http://0.0.0.0:%d/health", PORT)
     log.info("Athlete ID: %s", ATHLETE_ID)
-    uvicorn.run(app, host="::", port=PORT, log_config=None)
+    uvicorn.run(app, host="0.0.0.0", port=PORT, log_config=None)
