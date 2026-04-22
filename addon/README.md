@@ -31,7 +31,6 @@ Connects your [intervals.icu](https://intervals.icu) training data to Claude AI 
 | `coach_secret` | No | Protects the `/coach` endpoint |
 | `claude_model` | No | Model for `/coach` (default: claude-sonnet-4-6) |
 | `webhook_secret` | No | Must match the secret set in intervals.icu webhook settings |
-| `webhook_header_secret` | No | Additional header secret for webhook requests |
 | `ha_mobile_service` | No | HA notify service for push notifications (e.g. `notify.mobile_app_my_phone`) |
 | `cf_team_domain` | No | Cloudflare Access team domain — protects `/mcp` with JWT validation |
 | `cf_access_aud` | No | Cloudflare Access application AUD |

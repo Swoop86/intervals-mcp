@@ -408,7 +408,6 @@ class TestHealthEndpoint:
         assert auth["mcp_cf_access"] is False  # CF_ACCESS_AUD="" in tests
         assert auth["coach"] is True
         assert auth["webhook"] is True
-        assert auth["webhook_header"] is False  # INTERVALS_WEBHOOK_HEADER_SECRET=""
 
 
 # ---------------------------------------------------------------------------
@@ -459,25 +458,6 @@ class TestWebhookEndpoint:
         with patch.object(mcp_server, "ha_notify", new=AsyncMock()), \
              patch.object(mcp_server, "ha_fire_event", new=AsyncMock()):
             r = await client.post("/webhook", json=payload)
-        assert r.status_code == 200
-
-    async def test_wrong_header_secret_silent_reject(self, client):
-        with patch.object(mcp_server, "WEBHOOK_HEADER_SECRET", "expected_secret"):
-            r = await client.post(
-                "/webhook",
-                json={"secret": "test_webhook_secret", "events": []},
-                headers={"X-Webhook-Auth": "wrong_header_secret"},
-            )
-        assert r.status_code == 200
-        assert r.text == "OK"
-
-    async def test_correct_header_secret_proceeds(self, client):
-        with patch.object(mcp_server, "WEBHOOK_HEADER_SECRET", "correct_header"):
-            r = await client.post(
-                "/webhook",
-                json={"secret": "test_webhook_secret", "events": []},
-                headers={"X-Webhook-Auth": "correct_header"},
-            )
         assert r.status_code == 200
 
     async def test_replay_protection_drops_duplicate(self, client):

@@ -19,7 +19,6 @@ options:
   api_key: ""
   port: 8765
   webhook_secret: ""
-  webhook_header_secret: ""
   anthropic_api_key: ""
   coach_secret: ""
   claude_model: "claude-sonnet-4-6"
@@ -31,7 +30,6 @@ schema:
   api_key: password
   port: int
   webhook_secret: password?
-  webhook_header_secret: password?
   anthropic_api_key: password
   coach_secret: password
   claude_model: "list(claude-sonnet-4-6|claude-opus-4-7|claude-opus-4-6|claude-haiku-4-5)?"

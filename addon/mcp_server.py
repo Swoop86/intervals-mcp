@@ -62,7 +62,6 @@ ATHLETE_ID             = _safe_str(os.environ.get("INTERVALS_ATHLETE_ID"))
 API_KEY                = _safe_str(os.environ.get("INTERVALS_API_KEY"))
 PORT                   = _safe_int(os.environ.get("INTERVALS_PORT"), 8765)
 WEBHOOK_SECRET         = _safe_str(os.environ.get("INTERVALS_WEBHOOK_SECRET"))
-WEBHOOK_HEADER_SECRET  = _safe_str(os.environ.get("INTERVALS_WEBHOOK_HEADER_SECRET"))
 COACH_SECRET           = _safe_str(os.environ.get("COACH_SECRET"))
 CF_TEAM_DOMAIN         = _safe_str(os.environ.get("CF_TEAM_DOMAIN"))
 CF_ACCESS_AUD          = _safe_str(os.environ.get("CF_ACCESS_AUD"))
@@ -614,13 +613,6 @@ async def handle_webhook(request: Request) -> Response:
     if len(body) > MAX_BODY_BYTES:
         return PlainTextResponse("Payload Too Large", status_code=413)
 
-    # Custom authorization header (set in intervals.icu webhook config)
-    if WEBHOOK_HEADER_SECRET:
-        incoming = request.headers.get("x-webhook-auth", "")
-        if not _safe_eq(incoming, WEBHOOK_HEADER_SECRET):
-            log.warning("Webhook header auth failed from %s", ip)
-            return PlainTextResponse("OK", status_code=200)  # silent reject
-
     try:
         data = json.loads(body)
     except Exception:
@@ -768,7 +760,6 @@ async def handle_health(request: Request) -> Response:
             "mcp_cf_access": bool(CF_ACCESS_AUD),
             "coach": bool(COACH_SECRET),
             "webhook": bool(WEBHOOK_SECRET),
-            "webhook_header": bool(WEBHOOK_HEADER_SECRET),
         },
     })
 

@@ -53,7 +53,6 @@ Set `cf_team_domain` and `cf_access_aud` in the addon config to protect the endp
 | `coach_secret` | No | Token to protect the `/coach` endpoint |
 | `claude_model` | No | Claude model for `/coach` (default: claude-sonnet-4-6) |
 | `webhook_secret` | No | Secret configured in intervals.icu webhook settings |
-| `webhook_header_secret` | No | Additional header secret for webhook auth |
 | `ha_mobile_service` | No | HA notify service for mobile push (e.g. `notify.mobile_app_my_phone`) |
 | `cf_team_domain` | No | Cloudflare Access team domain (e.g. `yourteam.cloudflareaccess.com`) |
 | `cf_access_aud` | No | Cloudflare Access application AUD for JWT validation |
