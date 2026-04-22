@@ -650,7 +650,7 @@ class TestMcpAuthMiddleware:
 class TestReviewTrainingTool:
     async def test_returns_context_dict(self):
         fake_context = {
-            "athlete_id": "i546769",
+            "athlete_id": "i999999",
             "recent_activities": [],
             "wellness": {},
         }
@@ -660,7 +660,7 @@ class TestReviewTrainingTool:
         assert result == fake_context
 
     async def test_passes_activity_id(self):
-        fake_context = {"athlete_id": "i546769", "activity": {"id": "act123"}}
+        fake_context = {"athlete_id": "i999999", "activity": {"id": "act123"}}
         captured = {}
 
         async def mock_fetch(client, activity_id=""):

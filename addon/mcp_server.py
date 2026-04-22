@@ -445,9 +445,11 @@ async def review_training(activity_id: str = "") -> dict:
 
     After calling this tool, provide a coaching review covering:
     1. Latest workout analysis (effort vs intent, HR response, pacing)
-    2. Recovery status using the Recovery Index: RI = (HRV_today/HRV_baseline) / (RHR_today/RHR_baseline)
+    2. Recovery status using the Recovery Index (Section 11 framework, github.com/CrankAddict/section-11):
+       RI = (HRV_today/HRV_baseline) / (RHR_today/RHR_baseline)
        - RI ≥ 0.8 = Green, RI 0.7–0.79 = Amber, RI < 0.6 = Red
-    3. Training load assessment: ACWR = 7-day TSS / 28-day average TSS
+    3. Training load assessment (ACWR):
+       ACWR = 7-day TSS / 28-day average TSS
        - Safe range 0.8–1.3; flag ≥1.3; alarm ≥1.5
     4. Current training phase (Base/Build/Peak/Taper/Deload/Overreached)
     5. Specific plan adjustments if needed (use update_workout / delete_workout)

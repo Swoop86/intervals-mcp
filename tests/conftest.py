@@ -5,7 +5,7 @@ mcp_server.py raises SystemExit(1) at import time if ATHLETE_ID/API_KEY are miss
 import os
 import sys
 
-os.environ.setdefault("INTERVALS_ATHLETE_ID", "i546769")
+os.environ.setdefault("INTERVALS_ATHLETE_ID", "i999999")
 os.environ.setdefault("INTERVALS_API_KEY", "test_api_key")
 os.environ.setdefault("COACH_SECRET", "test_coach_secret")
 os.environ.setdefault("INTERVALS_WEBHOOK_SECRET", "test_webhook_secret")
