@@ -59,4 +59,4 @@ See the included `automations.yaml` for ready-made HA automations for mobile not
 
 ## Support
 
-[GitHub](https://github.com/fkotlarz/intervals-mcp)
+[GitHub](https://github.com/Swoop86/intervals-mcp)

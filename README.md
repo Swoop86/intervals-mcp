@@ -27,7 +27,7 @@ When you ask Claude "review my training", it calls `review_training`, gets your 
 ## Installation
 
 1. In Home Assistant: **Settings → Add-ons → Add-on Store → ⋮ → Repositories**
-2. Add: `https://github.com/fkotlarz/intervals-mcp`
+2. Add: `https://github.com/Swoop86/intervals-mcp`
 3. Install **Intervals.icu MCP Server**
 4. Set `athlete_id` and `api_key` in the addon configuration
 5. Start the addon
