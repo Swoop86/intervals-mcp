@@ -724,3 +724,53 @@ class TestDeleteWorkoutTool:
         call_path = mock_del.call_args[0][0]
         assert "events/42" in call_path
         assert result == {"status": "deleted", "event_id": 42}
+
+
+# ---------------------------------------------------------------------------
+# /authorize endpoint
+# ---------------------------------------------------------------------------
+
+class TestAuthorizeEndpoint:
+    async def test_no_cf_domain_returns_501(self, client):
+        with patch.object(mcp_server, "CF_TEAM_DOMAIN", ""):
+            r = await client.get("/authorize?response_type=code&client_id=test")
+        assert r.status_code == 501
+
+    async def test_redirects_to_cf_with_query_params(self, client):
+        with patch.object(mcp_server, "CF_TEAM_DOMAIN", "myteam.cloudflareaccess.com"):
+            r = await client.get(
+                "/authorize?response_type=code&client_id=abc.access&state=xyz",
+                follow_redirects=False,
+            )
+        assert r.status_code == 302
+        loc = r.headers["location"]
+        assert loc.startswith("https://myteam.cloudflareaccess.com/cdn-cgi/access/oauth/authorization")
+        assert "response_type=code" in loc
+        assert "client_id=abc.access" in loc
+        assert "state=xyz" in loc
+
+    async def test_no_query_params_no_question_mark(self, client):
+        with patch.object(mcp_server, "CF_TEAM_DOMAIN", "myteam.cloudflareaccess.com"):
+            r = await client.get("/authorize", follow_redirects=False)
+        assert r.status_code == 302
+        assert "?" not in r.headers["location"]
+
+
+# ---------------------------------------------------------------------------
+# /.well-known/oauth-protected-resource endpoint
+# ---------------------------------------------------------------------------
+
+class TestOAuthResourceMetadata:
+    async def test_returns_resource_and_auth_server(self, client):
+        with patch.object(mcp_server, "CF_TEAM_DOMAIN", "myteam.cloudflareaccess.com"):
+            r = await client.get("/.well-known/oauth-protected-resource")
+        assert r.status_code == 200
+        body = r.json()
+        assert "resource" in body
+        assert body["authorization_servers"] == ["https://myteam.cloudflareaccess.com"]
+
+    async def test_no_cf_domain_omits_auth_servers(self, client):
+        with patch.object(mcp_server, "CF_TEAM_DOMAIN", ""):
+            r = await client.get("/.well-known/oauth-protected-resource")
+        assert r.status_code == 200
+        assert "authorization_servers" not in r.json()

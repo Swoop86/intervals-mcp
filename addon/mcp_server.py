@@ -765,6 +765,27 @@ async def handle_health(request: Request) -> Response:
 
 
 # ---------------------------------------------------------------------------
+# OAuth endpoints — delegate to Cloudflare Access
+# ---------------------------------------------------------------------------
+async def handle_authorize(request: Request) -> Response:
+    if not CF_TEAM_DOMAIN:
+        return PlainTextResponse("OAuth not configured — set cf_team_domain", status_code=501)
+    target = f"https://{CF_TEAM_DOMAIN}/cdn-cgi/access/oauth/authorization"
+    qs = request.url.query
+    if qs:
+        target = f"{target}?{qs}"
+    return Response(status_code=302, headers={"Location": target})
+
+
+async def handle_oauth_resource_metadata(request: Request) -> Response:
+    host = request.headers.get("host", "")
+    data: dict = {"resource": f"https://{host}"}
+    if CF_TEAM_DOMAIN:
+        data["authorization_servers"] = [f"https://{CF_TEAM_DOMAIN}"]
+    return JSONResponse(data)
+
+
+# ---------------------------------------------------------------------------
 # Lifespan — manage FastMCP session manager + shared httpx client
 # ---------------------------------------------------------------------------
 @asynccontextmanager
@@ -803,6 +824,8 @@ app = Starlette(
         Route("/webhook", handle_webhook, methods=["POST"]),
         Route("/coach", handle_coach, methods=["POST"]),
         Route("/health", handle_health, methods=["GET"]),
+        Route("/authorize", handle_authorize, methods=["GET"]),
+        Route("/.well-known/oauth-protected-resource", handle_oauth_resource_metadata, methods=["GET"]),
         # Mount FastMCP last — it handles /mcp
         Mount("/", app=mcp_app),
     ],
