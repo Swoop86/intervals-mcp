@@ -12,8 +12,6 @@ os.environ.setdefault("INTERVALS_WEBHOOK_SECRET", "test_webhook_secret")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test_anthropic_key")
 os.environ.setdefault("INTERVALS_PORT", "8765")
 os.environ.setdefault("HA_TOKEN", "")
-os.environ.setdefault("CF_TEAM_DOMAIN", "")      # CF Access disabled in tests
-os.environ.setdefault("CF_ACCESS_AUD", "")       # CF Access disabled in tests
 os.environ.setdefault("CLAUDE_MODEL", "claude-sonnet-4-6")
 
 # Add addon/ so test files can import mcp_server / claude_coach directly

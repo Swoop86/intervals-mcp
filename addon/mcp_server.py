@@ -9,13 +9,14 @@ from __future__ import annotations
 import os
 import json
 import asyncio
+import base64
+import hashlib
 import hmac
 import ipaddress
+import secrets
 import time
 import logging
 
-import jwt as pyjwt
-from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -26,7 +27,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response, PlainTextResponse
+from starlette.responses import HTMLResponse, JSONResponse, Response, PlainTextResponse
 from starlette.routing import Mount, Route
 
 from mcp.server.fastmcp import FastMCP
@@ -58,21 +59,19 @@ def _safe_str(val: str | None) -> str:
         return ""
     return val.strip()
 
-ATHLETE_ID             = _safe_str(os.environ.get("INTERVALS_ATHLETE_ID"))
-API_KEY                = _safe_str(os.environ.get("INTERVALS_API_KEY"))
-PORT                   = _safe_int(os.environ.get("INTERVALS_PORT"), 8765)
-WEBHOOK_SECRET         = _safe_str(os.environ.get("INTERVALS_WEBHOOK_SECRET"))
-COACH_SECRET           = _safe_str(os.environ.get("COACH_SECRET"))
-CF_TEAM_DOMAIN         = _safe_str(os.environ.get("CF_TEAM_DOMAIN"))
-CF_ACCESS_AUD          = _safe_str(os.environ.get("CF_ACCESS_AUD"))
-HA_TOKEN               = _safe_str(os.environ.get("HA_TOKEN"))
-HA_URL                 = "http://supervisor/core"
-BASE_URL               = "https://intervals.icu/api/v1"
+ATHLETE_ID     = _safe_str(os.environ.get("INTERVALS_ATHLETE_ID"))
+API_KEY        = _safe_str(os.environ.get("INTERVALS_API_KEY"))
+PORT           = _safe_int(os.environ.get("INTERVALS_PORT"), 8765)
+WEBHOOK_SECRET = _safe_str(os.environ.get("INTERVALS_WEBHOOK_SECRET"))
+COACH_SECRET   = _safe_str(os.environ.get("COACH_SECRET"))
+HA_TOKEN       = _safe_str(os.environ.get("HA_TOKEN"))
+HA_URL         = "http://supervisor/core"
+BASE_URL       = "https://intervals.icu/api/v1"
 
 # Tunables
 HTTP_TIMEOUT      = httpx.Timeout(30.0, connect=10.0)
-WEBHOOK_TOLERANCE = 300           # 5 min replay tolerance
-MAX_BODY_BYTES    = 64 * 1024     # 64KB per request
+WEBHOOK_TOLERANCE = 300        # 5 min replay tolerance
+MAX_BODY_BYTES    = 64 * 1024  # 64 KB
 RATE_LIMIT_RPS    = 5
 RATE_BURST        = 10
 RATE_BUCKET_TTL   = 3600
@@ -93,6 +92,8 @@ def http() -> httpx.AsyncClient:
 # ---------------------------------------------------------------------------
 # Rate limiter — token bucket per IP with TTL eviction
 # ---------------------------------------------------------------------------
+from collections import defaultdict
+
 _rate_buckets: dict[str, dict] = defaultdict(
     lambda: {"tokens": float(RATE_BURST), "last": time.monotonic()}
 )
@@ -120,11 +121,11 @@ def _check_rate_limit(ip: str) -> bool:
 
 
 def _normalise_ip(raw: str) -> str:
-    raw = raw.strip().strip("[]")  # remove surrounding brackets e.g. [::1]
+    raw = raw.strip().strip("[]")
     try:
         return str(ipaddress.ip_address(raw))
     except ValueError:
-        return raw  # not a valid IP literal — return as-is
+        return raw
 
 
 def _get_ip(request: Request) -> str:
@@ -137,81 +138,16 @@ def _get_ip(request: Request) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Auth helpers — constant-time
+# Auth helpers
 # ---------------------------------------------------------------------------
 def _safe_eq(a: str, b: str) -> bool:
     return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
-
-
-def _check_bearer(request: Request, secret: str) -> bool:
-    if not secret:
-        return True
-    auth = request.headers.get("authorization", "")
-    if not auth.lower().startswith("bearer "):
-        return False
-    return _safe_eq(auth[7:], secret)
 
 
 def _check_header_token(request: Request, header: str, secret: str) -> bool:
     if not secret:
         return True
     return _safe_eq(request.headers.get(header.lower(), ""), secret)
-
-
-# ---------------------------------------------------------------------------
-# Cloudflare Access JWT validation
-# ---------------------------------------------------------------------------
-_cf_jwks: list[dict] = []
-_cf_jwks_expires: float = 0.0
-_JWKS_TTL = 3600.0
-
-
-async def _ensure_cf_jwks() -> bool:
-    """Fetch/refresh Cloudflare Access public keys. No-op if not configured."""
-    global _cf_jwks, _cf_jwks_expires
-    if not CF_TEAM_DOMAIN:
-        return False
-    if time.monotonic() < _cf_jwks_expires and _cf_jwks:
-        return True
-    url = f"https://{CF_TEAM_DOMAIN}/cdn-cgi/access/certs"
-    try:
-        r = await http().get(url, timeout=httpx.Timeout(10.0))
-        r.raise_for_status()
-        _cf_jwks = r.json().get("keys", [])
-        _cf_jwks_expires = time.monotonic() + _JWKS_TTL
-        log.info("CF Access JWKS loaded (%d keys)", len(_cf_jwks))
-        return True
-    except Exception as e:
-        log.warning("CF Access JWKS fetch failed: %s", e)
-        return False
-
-
-def _validate_cf_jwt(token: str) -> bool:
-    """Validate the CF-Access-Jwt-Assertion header against cached public keys."""
-    if not CF_ACCESS_AUD:
-        return True  # CF Access not configured — skip check
-    if not token:
-        return False
-    if not _cf_jwks:
-        log.warning("CF JWKS not loaded — rejecting /mcp request")
-        return False
-    for key_data in _cf_jwks:
-        try:
-            public_key = pyjwt.algorithms.RSAAlgorithm.from_jwk(key_data)
-            pyjwt.decode(token, public_key, algorithms=["RS256"], audience=CF_ACCESS_AUD)
-            return True
-        except pyjwt.ExpiredSignatureError:
-            log.warning("CF Access JWT expired")
-            return False
-        except pyjwt.InvalidAudienceError:
-            log.warning("CF Access JWT wrong audience (expected %s)", CF_ACCESS_AUD)
-            return False
-        except pyjwt.DecodeError:
-            continue  # try next key in the set
-        except Exception:
-            continue
-    log.warning("CF Access JWT did not match any JWKS key")
-    return False
 
 
 # ---------------------------------------------------------------------------
@@ -532,7 +468,244 @@ def _summarise_activity(a: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# MCP auth + rate limit middleware — applied only to /mcp path
+# OAuth 2.1 — built-in authorization server
+# State is in-memory. Tokens survive until expiry or process restart.
+# ---------------------------------------------------------------------------
+_oauth_clients: dict[str, dict] = {}  # client_id → registration data
+_oauth_codes: dict[str, dict] = {}    # code → {client_id, redirect_uri, ...}
+_oauth_tokens: dict[str, dict] = {}   # token → {client_id, expires_at}
+_oauth_lock = asyncio.Lock()
+
+_TOKEN_EXPIRY = 3600  # seconds
+_CODE_EXPIRY  = 600   # seconds
+
+
+def _gen_token(n: int = 32) -> str:
+    return secrets.token_urlsafe(n)
+
+
+def _ts() -> int:
+    return int(time.time())
+
+
+def _pkce_verify(verifier: str, challenge: str) -> bool:
+    digest = hashlib.sha256(verifier.encode()).digest()
+    computed = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+    return hmac.compare_digest(computed, challenge)
+
+
+def _validate_oauth_token(request: Request) -> bool:
+    if not COACH_SECRET:
+        return True  # no auth configured — allow all (warn at startup)
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return False
+    token = auth[7:].strip()
+    token_data = _oauth_tokens.get(token)
+    if not token_data:
+        return False
+    if token_data["expires_at"] < _ts():
+        _oauth_tokens.pop(token, None)
+        return False
+    return True
+
+
+async def handle_oauth_server_metadata(request: Request) -> Response:
+    host = request.headers.get("host", "")
+    base = f"https://{host}"
+    return JSONResponse({
+        "issuer": base,
+        "authorization_endpoint": f"{base}/authorize",
+        "token_endpoint": f"{base}/token",
+        "registration_endpoint": f"{base}/register",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+    })
+
+
+async def handle_oauth_resource_metadata(request: Request) -> Response:
+    host = request.headers.get("host", "")
+    base = f"https://{host}"
+    return JSONResponse({"resource": base, "authorization_servers": [base]})
+
+
+async def handle_register(request: Request) -> Response:
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid_request"}, status_code=400)
+
+    redirect_uris = body.get("redirect_uris")
+    if not redirect_uris or not isinstance(redirect_uris, list):
+        return JSONResponse({"error": "invalid_redirect_uri"}, status_code=400)
+
+    client_id = _gen_token(16)
+    async with _oauth_lock:
+        _oauth_clients[client_id] = {
+            "redirect_uris": redirect_uris,
+            "client_name": body.get("client_name", ""),
+        }
+    log.info("OAuth client registered: %s (%s)", client_id, body.get("client_name", ""))
+    return JSONResponse({
+        "client_id": client_id,
+        "redirect_uris": redirect_uris,
+        "client_name": body.get("client_name", ""),
+        "client_id_issued_at": _ts(),
+        "grant_types": ["authorization_code"],
+        "response_types": ["code"],
+        "token_endpoint_auth_method": "none",
+    }, status_code=201)
+
+
+_LOGIN_TEMPLATE = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Intervals.icu MCP — Connect</title>
+<style>
+*{{box-sizing:border-box}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+     background:#f3f4f6;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}}
+.card{{background:#fff;border-radius:12px;padding:40px;width:360px;box-shadow:0 4px 24px rgba(0,0,0,.1)}}
+h2{{margin:0 0 6px;font-size:1.2rem;color:#111}}
+p{{color:#6b7280;font-size:.9rem;margin:0 0 20px}}
+input{{width:100%;padding:10px 12px;border:1px solid #d1d5db;border-radius:8px;
+       font-size:1rem;outline:none;margin-bottom:4px}}
+input:focus{{border-color:#6366f1;box-shadow:0 0 0 3px rgba(99,102,241,.15)}}
+button{{width:100%;padding:11px;background:#6366f1;color:#fff;border:none;
+        border-radius:8px;font-size:1rem;font-weight:500;cursor:pointer;margin-top:16px}}
+button:hover{{background:#4f46e5}}
+.err{{color:#dc2626;font-size:.85rem;margin:0 0 14px}}
+</style>
+</head>
+<body>
+<div class="card">
+  <h2>Intervals.icu MCP</h2>
+  <p>Enter your <strong>coach_secret</strong> to connect Claude.ai to your training data.</p>
+  {error}
+  <form method="post" action="/authorize?{qs}">
+    <input type="password" name="password" placeholder="Access password" autofocus required />
+    <button type="submit">Connect</button>
+  </form>
+</div>
+</body>
+</html>"""
+
+
+async def handle_authorize(request: Request) -> Response:
+    params = dict(request.query_params)
+    client_id    = params.get("client_id", "")
+    redirect_uri = params.get("redirect_uri", "")
+    state        = params.get("state", "")
+    code_challenge        = params.get("code_challenge", "")
+    code_challenge_method = params.get("code_challenge_method", "S256")
+    qs = request.url.query
+
+    if client_id not in _oauth_clients:
+        return PlainTextResponse(
+            "Unknown client_id — re-add the MCP server in Claude settings", status_code=400
+        )
+    if redirect_uri not in _oauth_clients[client_id]["redirect_uris"]:
+        return PlainTextResponse("redirect_uri not registered", status_code=400)
+
+    if request.method == "GET":
+        return HTMLResponse(_LOGIN_TEMPLATE.format(error="", qs=qs))
+
+    # POST — validate password
+    form_data = await request.form()
+    password = form_data.get("password", "")
+
+    if not COACH_SECRET:
+        return HTMLResponse(
+            _LOGIN_TEMPLATE.format(
+                error='<p class="err">No password configured — set coach_secret in addon settings.</p>',
+                qs=qs,
+            ),
+            status_code=503,
+        )
+
+    if not _safe_eq(password, COACH_SECRET):
+        return HTMLResponse(
+            _LOGIN_TEMPLATE.format(error='<p class="err">Incorrect password.</p>', qs=qs),
+            status_code=401,
+        )
+
+    code = _gen_token(32)
+    async with _oauth_lock:
+        _oauth_codes[code] = {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "code_challenge": code_challenge,
+            "code_challenge_method": code_challenge_method,
+            "expires_at": _ts() + _CODE_EXPIRY,
+        }
+
+    sep = "&" if "?" in redirect_uri else "?"
+    location = f"{redirect_uri}{sep}code={code}"
+    if state:
+        location += f"&state={state}"
+    return Response(status_code=302, headers={"Location": location})
+
+
+async def handle_token(request: Request) -> Response:
+    try:
+        form_data = await request.form()
+    except Exception:
+        return JSONResponse({"error": "invalid_request"}, status_code=400)
+
+    grant_type   = form_data.get("grant_type", "")
+    code         = form_data.get("code", "")
+    redirect_uri = form_data.get("redirect_uri", "")
+    client_id    = form_data.get("client_id", "")
+    code_verifier = form_data.get("code_verifier", "")
+
+    if grant_type != "authorization_code":
+        return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+
+    async with _oauth_lock:
+        code_data = _oauth_codes.pop(code, None)  # single-use
+
+    if not code_data:
+        return JSONResponse({"error": "invalid_grant"}, status_code=400)
+    if code_data["expires_at"] < _ts():
+        return JSONResponse({"error": "invalid_grant", "error_description": "code expired"}, status_code=400)
+    if code_data["client_id"] != client_id:
+        return JSONResponse({"error": "invalid_client"}, status_code=400)
+    if code_data["redirect_uri"] != redirect_uri:
+        return JSONResponse({"error": "invalid_grant"}, status_code=400)
+
+    if code_data.get("code_challenge"):
+        if not code_verifier:
+            return JSONResponse(
+                {"error": "invalid_grant", "error_description": "code_verifier required"},
+                status_code=400,
+            )
+        if not _pkce_verify(code_verifier, code_data["code_challenge"]):
+            return JSONResponse(
+                {"error": "invalid_grant", "error_description": "PKCE mismatch"},
+                status_code=400,
+            )
+
+    token = _gen_token(32)
+    async with _oauth_lock:
+        _oauth_tokens[token] = {
+            "client_id": client_id,
+            "expires_at": _ts() + _TOKEN_EXPIRY,
+        }
+    log.info("OAuth token issued to client %s", client_id)
+    return JSONResponse({
+        "access_token": token,
+        "token_type": "bearer",
+        "expires_in": _TOKEN_EXPIRY,
+    })
+
+
+# ---------------------------------------------------------------------------
+# MCP rate limit + OAuth token middleware — applied only to /mcp path
 # ---------------------------------------------------------------------------
 class MCPAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -543,11 +716,8 @@ class MCPAuthMiddleware(BaseHTTPMiddleware):
         if not _check_rate_limit(ip):
             return PlainTextResponse("Too Many Requests", status_code=429)
 
-        # Refresh JWKS if needed (no-op when CF_TEAM_DOMAIN is not configured)
-        await _ensure_cf_jwks()
-        token = request.headers.get("cf-access-jwt-assertion", "")
-        if not _validate_cf_jwt(token):
-            log.warning("CF Access JWT missing/invalid on /mcp from %s", ip)
+        if not _validate_oauth_token(request):
+            log.warning("Unauthorized /mcp from %s", ip)
             return PlainTextResponse("Unauthorized", status_code=401)
 
         return await call_next(request)
@@ -626,8 +796,8 @@ async def handle_webhook(request: Request) -> Response:
     events = data.get("events", [])
     for event in events:
         event_type = event.get("type", "UNKNOWN")
-        event_ts = event.get("timestamp", "")
-        activity = event.get("activity", {})
+        event_ts   = event.get("timestamp", "")
+        activity   = event.get("activity", {})
         activity_id = activity.get("id", "")
 
         dedupe_key = f"{event_type}:{activity_id}:{event_ts}"
@@ -651,7 +821,7 @@ async def _handle_activity_uploaded(activity: dict) -> None:
     name = activity.get("name", "Unknown workout")
     sport = activity.get("type", "")
     duration_min = round(activity.get("moving_time", 0) / 60, 1)
-    distance_km = round((activity.get("distance", 0) or 0) / 1000, 2)
+    distance_km  = round((activity.get("distance", 0) or 0) / 1000, 2)
     tss = activity.get("icu_training_load", "?")
     msg = (
         f"**{sport}: {name}**\n"
@@ -757,32 +927,11 @@ async def handle_health(request: Request) -> Response:
         "status": "ok",
         "time": datetime.now(timezone.utc).isoformat(),
         "auth": {
-            "mcp_cf_access": bool(CF_ACCESS_AUD),
+            "mcp_oauth": True,
             "coach": bool(COACH_SECRET),
             "webhook": bool(WEBHOOK_SECRET),
         },
     })
-
-
-# ---------------------------------------------------------------------------
-# OAuth endpoints — delegate to Cloudflare Access
-# ---------------------------------------------------------------------------
-async def handle_authorize(request: Request) -> Response:
-    if not CF_TEAM_DOMAIN:
-        return PlainTextResponse("OAuth not configured — set cf_team_domain", status_code=501)
-    target = f"https://{CF_TEAM_DOMAIN}/cdn-cgi/access/oauth/authorization"
-    qs = request.url.query
-    if qs:
-        target = f"{target}?{qs}"
-    return Response(status_code=302, headers={"Location": target})
-
-
-async def handle_oauth_resource_metadata(request: Request) -> Response:
-    host = request.headers.get("host", "")
-    data: dict = {"resource": f"https://{host}"}
-    if CF_TEAM_DOMAIN:
-        data["authorization_servers"] = [f"https://{CF_TEAM_DOMAIN}"]
-    return JSONResponse(data)
 
 
 # ---------------------------------------------------------------------------
@@ -791,8 +940,6 @@ async def handle_oauth_resource_metadata(request: Request) -> Response:
 @asynccontextmanager
 async def lifespan(app: Starlette):
     async with mcp_app.router.lifespan_context(app):
-        if CF_TEAM_DOMAIN:
-            await _ensure_cf_jwks()
         try:
             yield
         finally:
@@ -808,10 +955,8 @@ if not ATHLETE_ID or not API_KEY:
     log.error("athlete_id and api_key are required — check addon config")
     raise SystemExit(1)
 
-if not CF_ACCESS_AUD:
-    log.warning("CF_ACCESS_AUD not set — /mcp endpoint has no Cloudflare Access validation!")
 if not COACH_SECRET:
-    log.warning("COACH_SECRET not set — /coach endpoint is unauthenticated!")
+    log.warning("COACH_SECRET not set — /mcp and /coach endpoints are unauthenticated!")
 if not WEBHOOK_SECRET:
     log.warning("WEBHOOK_SECRET not set — /webhook accepts unsigned payloads!")
 
@@ -824,7 +969,10 @@ app = Starlette(
         Route("/webhook", handle_webhook, methods=["POST"]),
         Route("/coach", handle_coach, methods=["POST"]),
         Route("/health", handle_health, methods=["GET"]),
-        Route("/authorize", handle_authorize, methods=["GET"]),
+        Route("/register", handle_register, methods=["POST"]),
+        Route("/authorize", handle_authorize, methods=["GET", "POST"]),
+        Route("/token", handle_token, methods=["POST"]),
+        Route("/.well-known/oauth-authorization-server", handle_oauth_server_metadata, methods=["GET"]),
         Route("/.well-known/oauth-protected-resource", handle_oauth_resource_metadata, methods=["GET"]),
         # Mount FastMCP last — it handles /mcp
         Mount("/", app=mcp_app),
@@ -835,7 +983,8 @@ app = Starlette(
 
 
 if __name__ == "__main__":
-    log.info("MCP endpoint:     http://0.0.0.0:%d/mcp  (CF Access: %s)", PORT, "yes" if CF_ACCESS_AUD else "NO")
+    log.info("MCP endpoint:     http://0.0.0.0:%d/mcp  (OAuth: %s)", PORT, "yes" if COACH_SECRET else "NO — set coach_secret!")
+    log.info("OAuth endpoints:  /authorize /token /register /.well-known/oauth-authorization-server")
     log.info("Webhook receiver: http://0.0.0.0:%d/webhook  (secret: %s)", PORT, "yes" if WEBHOOK_SECRET else "NO")
     log.info("Coach endpoint:   http://0.0.0.0:%d/coach  (auth: %s)", PORT, "yes" if COACH_SECRET else "NO")
     log.info("Health endpoint:  http://0.0.0.0:%d/health", PORT)

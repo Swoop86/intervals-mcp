@@ -1,7 +1,10 @@
 """
 Unit tests for mcp_server.py — pure helpers, auth, rate limiting,
-replay protection, and HTTP endpoints.
+replay protection, OAuth 2.1, and HTTP endpoints.
 """
+import base64
+import hashlib
+import secrets
 import time
 import json
 from datetime import datetime, timedelta, timezone
@@ -13,10 +16,10 @@ import pytest
 import mcp_server
 from mcp_server import (
     _safe_int, _safe_str, _safe_eq,
-    _check_bearer, _check_header_token, _get_ip, _normalise_ip,
+    _check_header_token, _get_ip, _normalise_ip,
     _check_rate_limit, _prune_rate_buckets,
     _is_replay, _summarise_activity,
-    _validate_cf_jwt,
+    _validate_oauth_token, _pkce_verify, _ts,
     today_iso, days_ago_iso,
     RATE_BURST, app,
 )
@@ -24,7 +27,7 @@ from starlette.requests import Request
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _mock_request(headers: dict | None = None, client_host: str = "1.2.3.4") -> Request:
@@ -34,6 +37,15 @@ def _mock_request(headers: dict | None = None, client_host: str = "1.2.3.4") -> 
     req.client.host = client_host
     return req
 
+
+def _make_code_challenge(verifier: str) -> str:
+    digest = hashlib.sha256(verifier.encode()).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
 def reset_rate_buckets():
@@ -49,14 +61,44 @@ def reset_replay_cache():
     mcp_server._seen_event_ids.clear()
 
 
+@pytest.fixture(autouse=True)
+def reset_oauth_state():
+    mcp_server._oauth_clients.clear()
+    mcp_server._oauth_codes.clear()
+    mcp_server._oauth_tokens.clear()
+    yield
+    mcp_server._oauth_clients.clear()
+    mcp_server._oauth_codes.clear()
+    mcp_server._oauth_tokens.clear()
+
+
 @pytest.fixture
 async def client():
-    # raise_app_exceptions=False turns unhandled ASGI exceptions into 500 responses
-    # instead of propagating — needed because FastMCP requires lifespan to be running,
-    # which httpx.ASGITransport does not invoke.
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+
+
+@pytest.fixture
+def registered_client():
+    """Pre-register an OAuth client and return its client_id."""
+    client_id = "test_client_id_fixture"
+    mcp_server._oauth_clients[client_id] = {
+        "redirect_uris": ["https://claude.ai/oauth/callback"],
+        "client_name": "Test Client",
+    }
+    return client_id
+
+
+@pytest.fixture
+def valid_token():
+    """Insert a live OAuth token into the token store and return it."""
+    token = "test_valid_bearer_token"
+    mcp_server._oauth_tokens[token] = {
+        "client_id": "test_client",
+        "expires_at": _ts() + 3600,
+    }
+    return token
 
 
 # ---------------------------------------------------------------------------
@@ -141,32 +183,6 @@ class TestSafeEq:
 
 
 # ---------------------------------------------------------------------------
-# _check_bearer
-# ---------------------------------------------------------------------------
-
-class TestCheckBearer:
-    def test_no_secret_always_passes(self):
-        req = _mock_request({"authorization": "Bearer wrong"})
-        assert _check_bearer(req, "") is True
-
-    def test_valid_bearer_token(self):
-        req = _mock_request({"authorization": "Bearer test_mcp_token"})
-        assert _check_bearer(req, "test_mcp_token") is True
-
-    def test_wrong_bearer_token(self):
-        req = _mock_request({"authorization": "Bearer wrong"})
-        assert _check_bearer(req, "test_mcp_token") is False
-
-    def test_missing_authorization_header(self):
-        req = _mock_request({})
-        assert _check_bearer(req, "test_mcp_token") is False
-
-    def test_non_bearer_scheme_rejected(self):
-        req = _mock_request({"authorization": "Basic dGVzdA=="})
-        assert _check_bearer(req, "test_mcp_token") is False
-
-
-# ---------------------------------------------------------------------------
 # _check_header_token
 # ---------------------------------------------------------------------------
 
@@ -189,7 +205,7 @@ class TestCheckHeaderToken:
 
 
 # ---------------------------------------------------------------------------
-# _get_ip
+# _get_ip / _normalise_ip
 # ---------------------------------------------------------------------------
 
 class TestNormaliseIp:
@@ -260,16 +276,13 @@ class TestCheckRateLimit:
     def test_different_ips_are_independent(self):
         for i in range(RATE_BURST):
             _check_rate_limit(f"10.0.{i}.1")
-        # Each IP used only 1 token — all should still have tokens
         for i in range(RATE_BURST):
             assert _check_rate_limit(f"10.0.{i}.1") is True
 
     def test_ipv6_expanded_and_compressed_share_same_bucket(self):
-        # Exhaust the bucket via the compressed form
         ip_compressed = _normalise_ip("::1")
         for _ in range(RATE_BURST):
             _check_rate_limit(ip_compressed)
-        # Expanded form normalises to the same key — bucket must already be exhausted
         ip_expanded = _normalise_ip("0:0:0:0:0:0:0:1")
         assert ip_compressed == ip_expanded
         assert _check_rate_limit(ip_expanded) is False
@@ -318,7 +331,7 @@ class TestIsReplay:
     def test_empty_event_id_never_cached(self):
         ts = datetime.now(timezone.utc).isoformat()
         assert _is_replay("", ts) is False
-        assert _is_replay("", ts) is False  # no cache entry for empty id
+        assert _is_replay("", ts) is False
 
 
 # ---------------------------------------------------------------------------
@@ -389,6 +402,78 @@ class TestDateHelpers:
 
 
 # ---------------------------------------------------------------------------
+# _pkce_verify
+# ---------------------------------------------------------------------------
+
+class TestPkceVerify:
+    def test_correct_verifier_passes(self):
+        verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+        challenge = _make_code_challenge(verifier)
+        assert _pkce_verify(verifier, challenge) is True
+
+    def test_wrong_verifier_fails(self):
+        verifier = "correct_verifier"
+        challenge = _make_code_challenge(verifier)
+        assert _pkce_verify("wrong_verifier", challenge) is False
+
+    def test_empty_strings_fail(self):
+        assert _pkce_verify("", "") is False
+
+
+# ---------------------------------------------------------------------------
+# _validate_oauth_token
+# ---------------------------------------------------------------------------
+
+class TestValidateOauthToken:
+    def test_no_coach_secret_allows_all(self):
+        req = _mock_request({})
+        with patch.object(mcp_server, "COACH_SECRET", ""):
+            assert _validate_oauth_token(req) is True
+
+    def test_missing_auth_header_rejected(self):
+        req = _mock_request({})
+        with patch.object(mcp_server, "COACH_SECRET", "test_coach_secret"):
+            assert _validate_oauth_token(req) is False
+
+    def test_non_bearer_scheme_rejected(self):
+        req = _mock_request({"authorization": "Basic dGVzdA=="})
+        with patch.object(mcp_server, "COACH_SECRET", "test_coach_secret"):
+            assert _validate_oauth_token(req) is False
+
+    def test_unknown_token_rejected(self):
+        req = _mock_request({"authorization": "Bearer notavalidtoken"})
+        with patch.object(mcp_server, "COACH_SECRET", "test_coach_secret"):
+            assert _validate_oauth_token(req) is False
+
+    def test_valid_token_accepted(self, valid_token):
+        req = _mock_request({"authorization": f"Bearer {valid_token}"})
+        with patch.object(mcp_server, "COACH_SECRET", "test_coach_secret"):
+            assert _validate_oauth_token(req) is True
+
+    def test_expired_token_rejected(self):
+        token = "expired_token"
+        mcp_server._oauth_tokens[token] = {
+            "client_id": "test",
+            "expires_at": _ts() - 1,
+        }
+        req = _mock_request({"authorization": f"Bearer {token}"})
+        with patch.object(mcp_server, "COACH_SECRET", "test_coach_secret"):
+            assert _validate_oauth_token(req) is False
+        assert token not in mcp_server._oauth_tokens  # evicted
+
+    def test_expired_token_evicted_from_store(self):
+        token = "will_be_evicted"
+        mcp_server._oauth_tokens[token] = {
+            "client_id": "test",
+            "expires_at": _ts() - 100,
+        }
+        req = _mock_request({"authorization": f"Bearer {token}"})
+        with patch.object(mcp_server, "COACH_SECRET", "test_coach_secret"):
+            _validate_oauth_token(req)
+        assert token not in mcp_server._oauth_tokens
+
+
+# ---------------------------------------------------------------------------
 # /health endpoint
 # ---------------------------------------------------------------------------
 
@@ -403,11 +488,11 @@ class TestHealthEndpoint:
         assert "time" in body
         assert "auth" in body
 
-    async def test_auth_flags_reflect_config(self, client):
+    async def test_auth_flags_present(self, client):
         auth = (await client.get("/health")).json()["auth"]
-        assert auth["mcp_cf_access"] is False  # CF_ACCESS_AUD="" in tests
-        assert auth["coach"] is True
-        assert auth["webhook"] is True
+        assert auth["mcp_oauth"] is True
+        assert auth["coach"] is True   # COACH_SECRET set in conftest
+        assert auth["webhook"] is True  # WEBHOOK_SECRET set in conftest
 
 
 # ---------------------------------------------------------------------------
@@ -472,9 +557,8 @@ class TestWebhookEndpoint:
         with patch.object(mcp_server, "ha_notify", new=AsyncMock()), \
              patch.object(mcp_server, "ha_fire_event", new=AsyncMock()):
             await client.post("/webhook", json=payload)
-            # Second identical post — same event_id:type:timestamp key
             r2 = await client.post("/webhook", json=payload)
-        assert r2.status_code == 200  # Still 200, just dropped silently
+        assert r2.status_code == 200
 
 
 # ---------------------------------------------------------------------------
@@ -542,85 +626,473 @@ class TestCoachEndpoint:
 
 
 # ---------------------------------------------------------------------------
-# CF Access JWT validation
-# ---------------------------------------------------------------------------
-
-class TestValidateCfJwt:
-    def test_no_aud_configured_skips_check(self):
-        # CF_ACCESS_AUD is "" in tests — validation is bypassed
-        assert _validate_cf_jwt("") is True
-        assert _validate_cf_jwt("any_token") is True
-
-    def test_with_aud_empty_token_rejected(self):
-        with patch.object(mcp_server, "CF_ACCESS_AUD", "test-aud"):
-            assert _validate_cf_jwt("") is False
-
-    def test_with_aud_no_jwks_loaded_rejected(self):
-        with patch.object(mcp_server, "CF_ACCESS_AUD", "test-aud"), \
-             patch.object(mcp_server, "_cf_jwks", []):
-            assert _validate_cf_jwt("some.jwt.token") is False
-
-    def test_expired_jwt_rejected(self):
-        import jwt as pyjwt
-        fake_key = {"kty": "RSA", "n": "x", "e": "AQAB"}
-        with patch.object(mcp_server, "CF_ACCESS_AUD", "test-aud"), \
-             patch.object(mcp_server, "_cf_jwks", [fake_key]), \
-             patch("mcp_server.pyjwt.algorithms.RSAAlgorithm.from_jwk", return_value=MagicMock()), \
-             patch("mcp_server.pyjwt.decode", side_effect=pyjwt.ExpiredSignatureError("expired")):
-            assert _validate_cf_jwt("expired.jwt.token") is False
-
-    def test_wrong_audience_rejected(self):
-        import jwt as pyjwt
-        fake_key = {"kty": "RSA"}
-        with patch.object(mcp_server, "CF_ACCESS_AUD", "test-aud"), \
-             patch.object(mcp_server, "_cf_jwks", [fake_key]), \
-             patch("mcp_server.pyjwt.algorithms.RSAAlgorithm.from_jwk", return_value=MagicMock()), \
-             patch("mcp_server.pyjwt.decode", side_effect=pyjwt.InvalidAudienceError("wrong aud")):
-            assert _validate_cf_jwt("wrong.aud.token") is False
-
-    def test_valid_jwt_accepted(self):
-        fake_key = {"kty": "RSA"}
-        with patch.object(mcp_server, "CF_ACCESS_AUD", "test-aud"), \
-             patch.object(mcp_server, "_cf_jwks", [fake_key]), \
-             patch("mcp_server.pyjwt.algorithms.RSAAlgorithm.from_jwk", return_value=MagicMock()), \
-             patch("mcp_server.pyjwt.decode", return_value={"sub": "user@example.com"}):
-            assert _validate_cf_jwt("valid.jwt.token") is True
-
-
-# ---------------------------------------------------------------------------
-# /mcp auth middleware (CF Access JWT — disabled when CF_ACCESS_AUD="")
+# /mcp auth middleware (OAuth token)
 # ---------------------------------------------------------------------------
 
 class TestMcpAuthMiddleware:
-    async def test_no_cf_aud_configured_passes_all(self, client):
-        # CF_ACCESS_AUD="" in tests → JWT check skipped → FastMCP handles it
+    async def test_no_token_returns_401(self, client):
+        r = await client.post("/mcp", content=b"{}", headers={"Content-Type": "application/json"})
+        assert r.status_code == 401
+
+    async def test_invalid_token_returns_401(self, client):
         r = await client.post(
             "/mcp",
             content=b"{}",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Authorization": "Bearer bogus_token"},
         )
-        assert r.status_code != 401  # middleware passes; FastMCP may return other codes
-
-    async def test_cf_aud_set_missing_jwt_returns_401(self, client):
-        with patch.object(mcp_server, "CF_ACCESS_AUD", "test-aud"), \
-             patch.object(mcp_server, "_cf_jwks", [{"kty": "RSA"}]):
-            r = await client.post("/mcp", json={})
         assert r.status_code == 401
 
-    async def test_cf_aud_set_valid_jwt_passes_middleware(self, client):
-        with patch.object(mcp_server, "CF_ACCESS_AUD", "test-aud"), \
-             patch.object(mcp_server, "_cf_jwks", [{"kty": "RSA"}]), \
-             patch("mcp_server.pyjwt.algorithms.RSAAlgorithm.from_jwk", return_value=MagicMock()), \
-             patch("mcp_server.pyjwt.decode", return_value={"sub": "me@example.com"}):
+    async def test_valid_token_passes_middleware(self, client, valid_token):
+        r = await client.post(
+            "/mcp",
+            content=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {valid_token}",
+            },
+        )
+        assert r.status_code != 401
+
+    async def test_no_coach_secret_allows_all(self, client):
+        with patch.object(mcp_server, "COACH_SECRET", ""):
             r = await client.post(
                 "/mcp",
                 content=b"{}",
-                headers={
-                    "Content-Type": "application/json",
-                    "CF-Access-Jwt-Assertion": "valid.jwt.token",
-                },
+                headers={"Content-Type": "application/json"},
             )
         assert r.status_code != 401
+
+
+# ---------------------------------------------------------------------------
+# /.well-known/oauth-authorization-server
+# ---------------------------------------------------------------------------
+
+class TestOAuthServerMetadata:
+    async def test_returns_200(self, client):
+        r = await client.get("/.well-known/oauth-authorization-server")
+        assert r.status_code == 200
+
+    async def test_required_fields_present(self, client):
+        body = (await client.get("/.well-known/oauth-authorization-server")).json()
+        assert "issuer" in body
+        assert "authorization_endpoint" in body
+        assert "token_endpoint" in body
+        assert "registration_endpoint" in body
+
+    async def test_endpoints_are_same_origin(self, client):
+        body = (await client.get("/.well-known/oauth-authorization-server")).json()
+        issuer = body["issuer"]
+        assert body["authorization_endpoint"].startswith(issuer)
+        assert body["token_endpoint"].startswith(issuer)
+        assert body["registration_endpoint"].startswith(issuer)
+
+    async def test_pkce_s256_supported(self, client):
+        body = (await client.get("/.well-known/oauth-authorization-server")).json()
+        assert "S256" in body.get("code_challenge_methods_supported", [])
+
+    async def test_authorization_code_grant_supported(self, client):
+        body = (await client.get("/.well-known/oauth-authorization-server")).json()
+        assert "authorization_code" in body.get("grant_types_supported", [])
+
+
+# ---------------------------------------------------------------------------
+# /.well-known/oauth-protected-resource
+# ---------------------------------------------------------------------------
+
+class TestOAuthResourceMetadata:
+    async def test_returns_200(self, client):
+        r = await client.get("/.well-known/oauth-protected-resource")
+        assert r.status_code == 200
+
+    async def test_resource_and_auth_server_point_to_self(self, client):
+        body = (await client.get("/.well-known/oauth-protected-resource")).json()
+        assert "resource" in body
+        assert "authorization_servers" in body
+        # Both should be same host (self-contained auth server)
+        resource = body["resource"]
+        assert all(s == resource for s in body["authorization_servers"])
+
+    async def test_authorization_servers_is_list(self, client):
+        body = (await client.get("/.well-known/oauth-protected-resource")).json()
+        assert isinstance(body["authorization_servers"], list)
+        assert len(body["authorization_servers"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# /register endpoint (RFC 7591 dynamic client registration)
+# ---------------------------------------------------------------------------
+
+class TestRegisterEndpoint:
+    async def test_valid_registration_returns_201(self, client):
+        r = await client.post("/register", json={
+            "redirect_uris": ["https://claude.ai/oauth/callback"],
+            "client_name": "Claude.ai",
+        })
+        assert r.status_code == 201
+
+    async def test_response_contains_client_id(self, client):
+        r = await client.post("/register", json={
+            "redirect_uris": ["https://claude.ai/oauth/callback"],
+        })
+        body = r.json()
+        assert "client_id" in body
+        assert isinstance(body["client_id"], str)
+        assert len(body["client_id"]) > 0
+
+    async def test_client_stored_in_state(self, client):
+        r = await client.post("/register", json={
+            "redirect_uris": ["https://example.com/cb"],
+            "client_name": "Test",
+        })
+        client_id = r.json()["client_id"]
+        assert client_id in mcp_server._oauth_clients
+        assert "https://example.com/cb" in mcp_server._oauth_clients[client_id]["redirect_uris"]
+
+    async def test_missing_redirect_uris_returns_400(self, client):
+        r = await client.post("/register", json={"client_name": "NoRedirect"})
+        assert r.status_code == 400
+        assert r.json()["error"] == "invalid_redirect_uri"
+
+    async def test_empty_redirect_uris_returns_400(self, client):
+        r = await client.post("/register", json={"redirect_uris": []})
+        assert r.status_code == 400
+
+    async def test_invalid_json_returns_400(self, client):
+        r = await client.post("/register", content=b"not json", headers={"Content-Type": "application/json"})
+        assert r.status_code == 400
+
+    async def test_multiple_redirect_uris_accepted(self, client):
+        uris = ["https://a.example.com/cb", "https://b.example.com/cb"]
+        r = await client.post("/register", json={"redirect_uris": uris})
+        assert r.status_code == 201
+        assert r.json()["redirect_uris"] == uris
+
+    async def test_each_registration_gets_unique_client_id(self, client):
+        r1 = await client.post("/register", json={"redirect_uris": ["https://a.com/cb"]})
+        r2 = await client.post("/register", json={"redirect_uris": ["https://b.com/cb"]})
+        assert r1.json()["client_id"] != r2.json()["client_id"]
+
+
+# ---------------------------------------------------------------------------
+# /authorize endpoint
+# ---------------------------------------------------------------------------
+
+class TestAuthorizeEndpoint:
+    async def test_get_unknown_client_returns_400(self, client):
+        r = await client.get("/authorize?client_id=unknown&redirect_uri=https://x.com/cb")
+        assert r.status_code == 400
+
+    async def test_get_known_client_returns_login_form(self, client, registered_client):
+        r = await client.get(
+            f"/authorize?client_id={registered_client}"
+            f"&redirect_uri=https://claude.ai/oauth/callback"
+            f"&response_type=code&state=abc",
+        )
+        assert r.status_code == 200
+        assert "text/html" in r.headers["content-type"]
+        assert "password" in r.text.lower()
+
+    async def test_get_unregistered_redirect_uri_returns_400(self, client, registered_client):
+        r = await client.get(
+            f"/authorize?client_id={registered_client}"
+            f"&redirect_uri=https://evil.com/steal",
+        )
+        assert r.status_code == 400
+
+    async def test_post_correct_password_redirects_with_code(self, client, registered_client):
+        r = await client.post(
+            f"/authorize?client_id={registered_client}"
+            f"&redirect_uri=https://claude.ai/oauth/callback"
+            f"&response_type=code&state=xyz",
+            data={"password": "test_coach_secret"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 302
+        loc = r.headers["location"]
+        assert "code=" in loc
+        assert "state=xyz" in loc
+        assert loc.startswith("https://claude.ai/oauth/callback")
+
+    async def test_post_wrong_password_returns_401_with_form(self, client, registered_client):
+        r = await client.post(
+            f"/authorize?client_id={registered_client}"
+            f"&redirect_uri=https://claude.ai/oauth/callback",
+            data={"password": "wrong_password"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 401
+        assert "text/html" in r.headers["content-type"]
+
+    async def test_post_no_coach_secret_returns_503(self, client, registered_client):
+        with patch.object(mcp_server, "COACH_SECRET", ""):
+            r = await client.post(
+                f"/authorize?client_id={registered_client}"
+                f"&redirect_uri=https://claude.ai/oauth/callback",
+                data={"password": "anything"},
+                follow_redirects=False,
+            )
+        assert r.status_code == 503
+
+    async def test_post_stores_code_in_state(self, client, registered_client):
+        r = await client.post(
+            f"/authorize?client_id={registered_client}"
+            f"&redirect_uri=https://claude.ai/oauth/callback",
+            data={"password": "test_coach_secret"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 302
+        # Extract code from location header
+        loc = r.headers["location"]
+        code = dict(p.split("=", 1) for p in loc.split("?", 1)[1].split("&"))["code"]
+        assert code in mcp_server._oauth_codes
+
+    async def test_post_with_pkce_stores_challenge(self, client, registered_client):
+        verifier = "my_code_verifier_abcdef1234567890"
+        challenge = _make_code_challenge(verifier)
+        r = await client.post(
+            f"/authorize?client_id={registered_client}"
+            f"&redirect_uri=https://claude.ai/oauth/callback"
+            f"&code_challenge={challenge}&code_challenge_method=S256",
+            data={"password": "test_coach_secret"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 302
+        loc = r.headers["location"]
+        code = dict(p.split("=", 1) for p in loc.split("?", 1)[1].split("&"))["code"]
+        assert mcp_server._oauth_codes[code]["code_challenge"] == challenge
+
+    async def test_no_state_param_omitted_from_redirect(self, client, registered_client):
+        r = await client.post(
+            f"/authorize?client_id={registered_client}"
+            f"&redirect_uri=https://claude.ai/oauth/callback",
+            data={"password": "test_coach_secret"},
+            follow_redirects=False,
+        )
+        loc = r.headers["location"]
+        assert "state=" not in loc
+
+
+# ---------------------------------------------------------------------------
+# /token endpoint
+# ---------------------------------------------------------------------------
+
+class TestTokenEndpoint:
+    def _insert_code(self, client_id: str, redirect_uri: str, challenge: str = "") -> str:
+        code = "test_auth_code_12345"
+        mcp_server._oauth_codes[code] = {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "expires_at": _ts() + 600,
+        }
+        return code
+
+    async def test_valid_exchange_returns_token(self, client, registered_client):
+        code = self._insert_code(registered_client, "https://claude.ai/oauth/callback")
+        r = await client.post("/token", data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://claude.ai/oauth/callback",
+            "client_id": registered_client,
+        })
+        assert r.status_code == 200
+        body = r.json()
+        assert "access_token" in body
+        assert body["token_type"] == "bearer"
+        assert body["expires_in"] == mcp_server._TOKEN_EXPIRY
+
+    async def test_token_stored_in_state(self, client, registered_client):
+        code = self._insert_code(registered_client, "https://claude.ai/oauth/callback")
+        r = await client.post("/token", data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://claude.ai/oauth/callback",
+            "client_id": registered_client,
+        })
+        token = r.json()["access_token"]
+        assert token in mcp_server._oauth_tokens
+
+    async def test_code_is_single_use(self, client, registered_client):
+        code = self._insert_code(registered_client, "https://claude.ai/oauth/callback")
+        await client.post("/token", data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://claude.ai/oauth/callback",
+            "client_id": registered_client,
+        })
+        # Second use of same code must fail
+        r2 = await client.post("/token", data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://claude.ai/oauth/callback",
+            "client_id": registered_client,
+        })
+        assert r2.status_code == 400
+        assert r2.json()["error"] == "invalid_grant"
+
+    async def test_unknown_code_returns_invalid_grant(self, client, registered_client):
+        r = await client.post("/token", data={
+            "grant_type": "authorization_code",
+            "code": "nonexistent",
+            "redirect_uri": "https://claude.ai/oauth/callback",
+            "client_id": registered_client,
+        })
+        assert r.status_code == 400
+        assert r.json()["error"] == "invalid_grant"
+
+    async def test_wrong_client_id_returns_invalid_client(self, client, registered_client):
+        code = self._insert_code(registered_client, "https://claude.ai/oauth/callback")
+        r = await client.post("/token", data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://claude.ai/oauth/callback",
+            "client_id": "wrong_client",
+        })
+        assert r.status_code == 400
+        assert r.json()["error"] == "invalid_client"
+
+    async def test_wrong_redirect_uri_returns_invalid_grant(self, client, registered_client):
+        code = self._insert_code(registered_client, "https://claude.ai/oauth/callback")
+        r = await client.post("/token", data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://evil.com/steal",
+            "client_id": registered_client,
+        })
+        assert r.status_code == 400
+        assert r.json()["error"] == "invalid_grant"
+
+    async def test_unsupported_grant_type_returns_error(self, client, registered_client):
+        r = await client.post("/token", data={
+            "grant_type": "client_credentials",
+            "client_id": registered_client,
+        })
+        assert r.status_code == 400
+        assert r.json()["error"] == "unsupported_grant_type"
+
+    async def test_expired_code_returns_invalid_grant(self, client, registered_client):
+        code = "expired_code"
+        mcp_server._oauth_codes[code] = {
+            "client_id": registered_client,
+            "redirect_uri": "https://claude.ai/oauth/callback",
+            "code_challenge": "",
+            "code_challenge_method": "S256",
+            "expires_at": _ts() - 1,
+        }
+        r = await client.post("/token", data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://claude.ai/oauth/callback",
+            "client_id": registered_client,
+        })
+        assert r.status_code == 400
+        assert r.json()["error"] == "invalid_grant"
+
+    async def test_pkce_correct_verifier_accepted(self, client, registered_client):
+        verifier = "my_code_verifier_abcdef1234567890"
+        challenge = _make_code_challenge(verifier)
+        code = self._insert_code(registered_client, "https://claude.ai/oauth/callback", challenge)
+        r = await client.post("/token", data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://claude.ai/oauth/callback",
+            "client_id": registered_client,
+            "code_verifier": verifier,
+        })
+        assert r.status_code == 200
+        assert "access_token" in r.json()
+
+    async def test_pkce_wrong_verifier_rejected(self, client, registered_client):
+        verifier = "correct_verifier_value_xyz"
+        challenge = _make_code_challenge(verifier)
+        code = self._insert_code(registered_client, "https://claude.ai/oauth/callback", challenge)
+        r = await client.post("/token", data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://claude.ai/oauth/callback",
+            "client_id": registered_client,
+            "code_verifier": "wrong_verifier",
+        })
+        assert r.status_code == 400
+        assert r.json()["error"] == "invalid_grant"
+
+    async def test_pkce_missing_verifier_rejected(self, client, registered_client):
+        challenge = _make_code_challenge("some_verifier")
+        code = self._insert_code(registered_client, "https://claude.ai/oauth/callback", challenge)
+        r = await client.post("/token", data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://claude.ai/oauth/callback",
+            "client_id": registered_client,
+        })
+        assert r.status_code == 400
+        assert r.json()["error"] == "invalid_grant"
+
+
+# ---------------------------------------------------------------------------
+# Full OAuth flow integration test
+# ---------------------------------------------------------------------------
+
+class TestOAuthFullFlow:
+    async def test_register_authorize_token_mcp(self, client):
+        # 1. Register client
+        reg = await client.post("/register", json={
+            "redirect_uris": ["https://claude.ai/oauth/callback"],
+            "client_name": "Claude.ai",
+        })
+        assert reg.status_code == 201
+        client_id = reg.json()["client_id"]
+
+        # 2. PKCE setup
+        verifier = secrets.token_urlsafe(32)
+        challenge = _make_code_challenge(verifier)
+
+        # 3. Authorize — get login form
+        auth_get = await client.get(
+            f"/authorize?client_id={client_id}"
+            f"&redirect_uri=https://claude.ai/oauth/callback"
+            f"&response_type=code&state=flow_test"
+            f"&code_challenge={challenge}&code_challenge_method=S256",
+        )
+        assert auth_get.status_code == 200
+
+        # 4. Authorize — submit password
+        auth_post = await client.post(
+            f"/authorize?client_id={client_id}"
+            f"&redirect_uri=https://claude.ai/oauth/callback"
+            f"&response_type=code&state=flow_test"
+            f"&code_challenge={challenge}&code_challenge_method=S256",
+            data={"password": "test_coach_secret"},
+            follow_redirects=False,
+        )
+        assert auth_post.status_code == 302
+        loc = auth_post.headers["location"]
+        params = dict(p.split("=", 1) for p in loc.split("?", 1)[1].split("&"))
+        code = params["code"]
+        assert params["state"] == "flow_test"
+
+        # 5. Exchange code for token
+        tok = await client.post("/token", data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "https://claude.ai/oauth/callback",
+            "client_id": client_id,
+            "code_verifier": verifier,
+        })
+        assert tok.status_code == 200
+        access_token = tok.json()["access_token"]
+
+        # 6. Use token to hit /mcp
+        mcp_r = await client.post(
+            "/mcp",
+            content=b"{}",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {access_token}",
+            },
+        )
+        assert mcp_r.status_code != 401
 
 
 # ---------------------------------------------------------------------------
@@ -724,53 +1196,3 @@ class TestDeleteWorkoutTool:
         call_path = mock_del.call_args[0][0]
         assert "events/42" in call_path
         assert result == {"status": "deleted", "event_id": 42}
-
-
-# ---------------------------------------------------------------------------
-# /authorize endpoint
-# ---------------------------------------------------------------------------
-
-class TestAuthorizeEndpoint:
-    async def test_no_cf_domain_returns_501(self, client):
-        with patch.object(mcp_server, "CF_TEAM_DOMAIN", ""):
-            r = await client.get("/authorize?response_type=code&client_id=test")
-        assert r.status_code == 501
-
-    async def test_redirects_to_cf_with_query_params(self, client):
-        with patch.object(mcp_server, "CF_TEAM_DOMAIN", "myteam.cloudflareaccess.com"):
-            r = await client.get(
-                "/authorize?response_type=code&client_id=abc.access&state=xyz",
-                follow_redirects=False,
-            )
-        assert r.status_code == 302
-        loc = r.headers["location"]
-        assert loc.startswith("https://myteam.cloudflareaccess.com/cdn-cgi/access/oauth/authorization")
-        assert "response_type=code" in loc
-        assert "client_id=abc.access" in loc
-        assert "state=xyz" in loc
-
-    async def test_no_query_params_no_question_mark(self, client):
-        with patch.object(mcp_server, "CF_TEAM_DOMAIN", "myteam.cloudflareaccess.com"):
-            r = await client.get("/authorize", follow_redirects=False)
-        assert r.status_code == 302
-        assert "?" not in r.headers["location"]
-
-
-# ---------------------------------------------------------------------------
-# /.well-known/oauth-protected-resource endpoint
-# ---------------------------------------------------------------------------
-
-class TestOAuthResourceMetadata:
-    async def test_returns_resource_and_auth_server(self, client):
-        with patch.object(mcp_server, "CF_TEAM_DOMAIN", "myteam.cloudflareaccess.com"):
-            r = await client.get("/.well-known/oauth-protected-resource")
-        assert r.status_code == 200
-        body = r.json()
-        assert "resource" in body
-        assert body["authorization_servers"] == ["https://myteam.cloudflareaccess.com"]
-
-    async def test_no_cf_domain_omits_auth_servers(self, client):
-        with patch.object(mcp_server, "CF_TEAM_DOMAIN", ""):
-            r = await client.get("/.well-known/oauth-protected-resource")
-        assert r.status_code == 200
-        assert "authorization_servers" not in r.json()
