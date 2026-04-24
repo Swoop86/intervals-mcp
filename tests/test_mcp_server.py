@@ -1602,6 +1602,110 @@ class TestSetCoachingStyle:
         assert profile["coaching_methodology"] == "Pyramidal"
 
 
+class TestGetProgress:
+    def _make_activity(self, date: str, distance_m: float = 8000, tss: float = 50,
+                       ctl: float = 55.0, hr: float | None = 140) -> dict:
+        return {
+            "start_date_local": date,
+            "type": "Run",
+            "distance": distance_m,
+            "moving_time": 2700,
+            "icu_training_load": tss,
+            "icu_ctl": ctl,
+            "average_heartrate": hr,
+        }
+
+    def _make_wellness(self, date: str, hrv: float = 60.0, rhr: float = 52.0,
+                       sleep_secs: int = 25200) -> dict:
+        return {"id": date, "hrv": hrv, "restingHR": rhr, "sleepSecs": sleep_secs}
+
+    async def test_returns_monthly_summaries(self):
+        acts = [
+            self._make_activity("2026-02-10", ctl=48.0),
+            self._make_activity("2026-02-20", ctl=51.0),
+            self._make_activity("2026-03-10", ctl=54.0),
+            self._make_activity("2026-03-25", ctl=57.0),
+        ]
+        wells = [
+            self._make_wellness("2026-02-10"),
+            self._make_wellness("2026-03-10", hrv=65.0),
+        ]
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(side_effect=[acts, wells])):
+            from mcp_server import get_progress
+            result = await get_progress(months=2)
+        assert len(result["monthly_summaries"]) == 2
+        assert result["monthly_summaries"][0]["month"] == "2026-02"
+        assert result["monthly_summaries"][1]["month"] == "2026-03"
+
+    async def test_trend_ctl_change(self):
+        acts = [
+            self._make_activity("2026-02-10", ctl=40.0),
+            self._make_activity("2026-03-25", ctl=55.0),
+        ]
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(side_effect=[acts, []])):
+            from mcp_server import get_progress
+            result = await get_progress(months=2)
+        assert result["trend"]["ctl_start"] == 40.0
+        assert result["trend"]["ctl_end"] == 55.0
+        assert result["trend"]["ctl_change"] == 15.0
+
+    async def test_months_clamped_to_12(self):
+        captured = {}
+
+        async def _fake_get(path, params=None):
+            captured["params"] = params or {}
+            return []
+
+        with patch.object(mcp_server, "icu_get", new=_fake_get):
+            from mcp_server import get_progress
+            await get_progress(months=99)
+        # Should have requested max 12 months
+        assert captured["params"].get("oldest") is not None
+
+    async def test_empty_data_returns_structure(self):
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(side_effect=[[], []])):
+            from mcp_server import get_progress
+            result = await get_progress(months=3)
+        assert "monthly_summaries" in result
+        assert "trend" in result
+        assert result["trend"]["ctl_change"] is None
+
+    async def test_wellness_averages_computed(self):
+        acts = [self._make_activity("2026-03-10", ctl=50.0)]
+        wells = [
+            self._make_wellness("2026-03-05", hrv=58.0, rhr=51.0, sleep_secs=25200),
+            self._make_wellness("2026-03-12", hrv=62.0, rhr=49.0, sleep_secs=28800),
+        ]
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(side_effect=[acts, wells])):
+            from mcp_server import get_progress
+            result = await get_progress(months=1)
+        summary = result["monthly_summaries"][0]
+        assert summary["avg_hrv"] == 60.0
+        assert summary["avg_resting_hr"] == 50.0
+
+    async def test_easy_pace_computed_for_low_hr_runs(self):
+        # 8km in 40min at 140bpm → 5.0 min/km
+        acts = [{"start_date_local": "2026-03-10", "type": "Run",
+                 "distance": 8000, "moving_time": 2400, "icu_training_load": 50,
+                 "icu_ctl": 50.0, "average_heartrate": 140}]
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(side_effect=[acts, []])):
+            from mcp_server import get_progress
+            result = await get_progress(months=1)
+        summary = result["monthly_summaries"][0]
+        assert summary["avg_easy_pace_min_per_km"] == 5.0
+
+    async def test_high_hr_run_excluded_from_easy_pace(self):
+        # 160bpm is above threshold → should not count as easy
+        acts = [{"start_date_local": "2026-03-10", "type": "Run",
+                 "distance": 8000, "moving_time": 2400, "icu_training_load": 70,
+                 "icu_ctl": 52.0, "average_heartrate": 165}]
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(side_effect=[acts, []])):
+            from mcp_server import get_progress
+            result = await get_progress(months=1)
+        summary = result["monthly_summaries"][0]
+        assert summary["avg_easy_pace_min_per_km"] is None
+
+
 class TestGetWeather:
     def _mock_http(self, geo_data=None, forecast_data=None):
         """Return a mock that intercepts Open-Meteo requests."""

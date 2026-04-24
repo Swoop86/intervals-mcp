@@ -60,7 +60,17 @@ Claude calls `update_profile`. Your location enables weather lookups.
 
 Claude calls `set_race_goal` and automatically determines your current training phase (Base/Build/Peak/Taper/Race week) based on weeks remaining. Every coaching review from that point is framed around the goal. When the race is done: *"Clear my race goal"*.
 
-### 6. Set a coaching methodology (optional)
+### 6. Ask about progress
+
+> *"Am I improving?"* → Claude calls `get_progress(months=3)` for monthly CTL, volume, wellness, and easy-pace trends, then gives you a data-backed answer.
+
+> *"I don't think I'm progressing — what's going wrong?"* → Claude calls `get_progress(months=6)` to look for stagnation patterns, flat CTL, or overreaching signals, then suggests adjustments.
+
+> *"Recommend a training program for me"* → Claude calls `review_training` + `get_progress` to understand your baseline, then designs a program using your methodology + race goal and creates it in your calendar via `create_plan`.
+
+`get_progress` returns per-month aggregates: activity count, total km, total TSS, CTL at end of month, average HRV, resting HR, sleep, and easy-pace trend (pace on runs below 155bpm — improving pace at the same HR = aerobic development).
+
+### 7. Set a coaching methodology (optional)
 
 Without a methodology, Claude applies general endurance principles. Choose a preset for a consistent coaching philosophy across every conversation:
 
@@ -77,7 +87,7 @@ Without a methodology, Claude applies general endurance principles. Choose a pre
 
 The selected methodology is stored in the profile and applied to every coaching review, including automated `/coach` reviews.
 
-### 7. Weather-aware planning
+### 8. Weather-aware planning
 
 Once your location is set, Claude can check the forecast before scheduling:
 
@@ -85,7 +95,7 @@ Once your location is set, Claude can check the forecast before scheduling:
 
 Claude calls `get_weather` (Open-Meteo, no API key needed) and `get_planned_workouts`, then reschedules accordingly. It will also ask about rain gear for borderline conditions rather than just cancelling a session.
 
-### 8. Webhook (optional)
+### 9. Webhook (optional)
 
 In intervals.icu: **Settings → Developer Settings → Webhooks**
 

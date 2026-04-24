@@ -113,6 +113,45 @@ Once the race is done:
 
 ---
 
+## Progress tracking
+
+> **You:** Am I improving?
+>
+> **Claude:** *calls `get_progress(months=3)` then `review_training`*
+>
+> Over the past 3 months your CTL (fitness score) has risen from 38 to 54 — that's solid progress. Your easy-pace runs have averaged 5:55/km this month vs 6:20/km in February, which means your aerobic efficiency is improving: you're running faster at the same effort. HRV has trended upward (+4 points), and resting HR has dropped 2bpm. Everything points to good adaptation.
+
+> **You:** I don't think I'm improving — what are we doing wrong?
+>
+> **Claude:** *calls `get_progress(months=6)`*
+>
+> Looking at the last 6 months I can see the problem: your CTL peaked in March at 58 and has been declining since. Total km has stayed constant but TSS has dropped — you're covering the same volume but at lower intensity, which isn't providing a new stimulus. Your HRV has also been flat. I'd suggest introducing one more quality session per week. Want me to rebuild the next 4 weeks?
+
+`get_progress` returns per-month summaries of: activity count, total km, total TSS, CTL at end of month, average HRV, resting HR, sleep, and easy-pace trend (avg pace for runs below 155bpm — improving pace at the same HR is the clearest sign of aerobic development).
+
+---
+
+## "Recommend me a training program"
+
+This is Claude's job — no additional server tools needed. Once Claude has:
+- Your profile (paces, volume, training days)
+- Your coaching methodology
+- Your race goal and current phase
+- Your current fitness (`review_training`)
+- Your progress trend (`get_progress`)
+
+...it has everything needed to design and write a program directly into your calendar via `create_plan`.
+
+> **You:** Based on my current fitness, build me a 4-week base block.
+>
+> **Claude:** *calls `review_training` and `get_progress(months=2)` and `get_weather`*
+>
+> Your CTL is 46 and you're coming off a light week (TSB +8), so you have room to load. Using polarized methodology, here's a 4-week block: weeks 1–2 increase easy volume by 10%, introduce one fartlek session. Week 3 holds volume and adds a second quality session. Week 4 is a recovery week at 70% volume. Creating it now…
+>
+> **Claude:** *calls `create_plan` with 28 workouts*
+
+---
+
 ## Coaching methodology
 
 Without a methodology set, Claude applies general endurance principles. Choose a preset to lock in a consistent coaching philosophy that applies to **every conversation** — not just the current one.

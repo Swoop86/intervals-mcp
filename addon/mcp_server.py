@@ -551,6 +551,10 @@ async def review_training(activity_id: str = "") -> dict:
     - Analyse fitness trends (CTL, ATL, form)
     - Decide whether to adjust the plan
 
+    For longer-term progress questions ("am I improving?", "is my training working?",
+    "recommend a training program") also call get_progress to get monthly trend data
+    before answering.
+
     After calling this tool, provide a coaching review covering:
     1. Latest workout analysis (effort vs intent, HR response, pacing)
     2. Recovery status using the Recovery Index (Section 11 framework, github.com/CrankAddict/section-11):
@@ -963,6 +967,109 @@ async def get_weather(days: int = 7) -> dict:
         })
 
     return {"location": resolved_name, "forecast": forecast}
+
+
+@mcp.tool()
+async def get_progress(months: int = 3) -> dict:
+    """Assess training progress over a multi-month window.
+
+    Returns monthly summaries of volume, training load (TSS), CTL (fitness),
+    and wellness metrics (HRV, sleep, resting HR). Use this when the athlete
+    asks:
+    - "Am I improving?" / "Is my training working?"
+    - "How has my fitness changed over the past few months?"
+    - "I don't think I'm progressing — what's going wrong?"
+    - Before recommending a new training program (understand the baseline trend)
+
+    How to interpret the results:
+    - Rising CTL month-over-month → fitness is building
+    - Stable or falling CTL despite consistent training → accumulating fatigue or not enough stimulus
+    - Rising HRV trend → improving recovery capacity / aerobic adaptation
+    - Falling resting HR over months → aerobic base development
+    - Volume increasing while wellness holds → good adaptation
+    - Volume increasing while HRV falls + resting HR rises → overreaching risk
+
+    Args:
+        months: Months of history to analyse (1–12, default 3)
+    """
+    from collections import defaultdict
+
+    months = max(1, min(12, months))
+    days = months * 31 + 7  # small buffer to capture full first month
+
+    activities, wellness = await asyncio.gather(
+        icu_get(f"athlete/{ATHLETE_ID}/activities",
+                params={"oldest": days_ago_iso(days), "newest": today_iso()}),
+        icu_get(f"athlete/{ATHLETE_ID}/wellness",
+                params={"oldest": days_ago_iso(days), "newest": today_iso()}),
+    )
+
+    # Group by YYYY-MM
+    by_month_acts: dict[str, list] = defaultdict(list)
+    for a in activities:
+        m = (a.get("start_date_local") or "")[:7]
+        if m:
+            by_month_acts[m].append(a)
+
+    by_month_well: dict[str, list] = defaultdict(list)
+    for w in wellness:
+        m = (w.get("id") or "")[:7]
+        if m:
+            by_month_well[m].append(w)
+
+    def _avg(items: list, key: str) -> float | None:
+        vals = [v[key] for v in items if v.get(key) is not None]
+        return round(sum(vals) / len(vals), 1) if vals else None
+
+    monthly: list[dict] = []
+    for month in sorted(by_month_acts.keys()):
+        acts = sorted(by_month_acts[month], key=lambda a: a.get("start_date_local", ""))
+        wells = by_month_well.get(month, [])
+
+        sleep_vals = [w["sleepSecs"] / 3600 for w in wells if w.get("sleepSecs")]
+
+        # Easy-pace proxy: runs with avg HR < 155 bpm and distance > 1km
+        easy_runs = [
+            a for a in acts
+            if a.get("type") in ("Run", "VirtualRun")
+            and (a.get("average_heartrate") or 999) < 155
+            and (a.get("distance") or 0) > 1000
+        ]
+        easy_paces = [
+            a["moving_time"] / a["distance"] * 1000 / 60
+            for a in easy_runs
+            if a.get("moving_time") and a.get("distance")
+        ]
+
+        monthly.append({
+            "month": month,
+            "activity_count": len(acts),
+            "total_km": round(sum((a.get("distance") or 0) for a in acts) / 1000, 1),
+            "total_tss": round(sum(a.get("icu_training_load") or 0 for a in acts)),
+            "ctl_end": acts[-1].get("icu_ctl") if acts else None,
+            "avg_easy_pace_min_per_km": round(sum(easy_paces) / len(easy_paces), 2) if easy_paces else None,
+            "avg_hrv": _avg(wells, "hrv"),
+            "avg_resting_hr": _avg(wells, "restingHR"),
+            "avg_sleep_h": round(sum(sleep_vals) / len(sleep_vals), 1) if sleep_vals else None,
+        })
+
+    # Trim to requested months (buffer may have added an extra partial month)
+    monthly = monthly[-months:]
+
+    ctl_start = monthly[0].get("ctl_end") if monthly else None
+    ctl_end   = monthly[-1].get("ctl_end") if monthly else None
+
+    return {
+        "period_months": months,
+        "monthly_summaries": monthly,
+        "trend": {
+            "ctl_start": ctl_start,
+            "ctl_end": ctl_end,
+            "ctl_change": round(ctl_end - ctl_start, 1) if ctl_start and ctl_end else None,
+            "total_km": round(sum(m["total_km"] for m in monthly), 1),
+            "total_activities": sum(m["activity_count"] for m in monthly),
+        },
+    }
 
 
 def _summarise_activity(a: dict) -> dict:
