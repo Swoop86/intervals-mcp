@@ -7,6 +7,7 @@ for the webhook, coach, and health routes, all in a single ASGI app.
 from __future__ import annotations
 
 import os
+import re
 import json
 import asyncio
 import base64
@@ -41,6 +42,13 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 log = logging.getLogger("intervals_mcp")
+
+# Suppress noisy HA Supervisor watchdog health-check pings from access logs
+class _HealthCheckFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "GET /health" not in record.getMessage()
+
+logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
 
 # ---------------------------------------------------------------------------
 # Config — from environment (set by run.sh from HA addon options)
@@ -363,6 +371,8 @@ async def get_activity_detail(activity_id: str) -> dict:
     Args:
         activity_id: Activity ID e.g. 'i12345678'
     """
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", activity_id):
+        return {"error": "Invalid activity_id"}
     return await icu_get(f"activity/{activity_id}")
 
 
@@ -377,6 +387,8 @@ async def get_activity_intervals(activity_id: str) -> list[dict]:
     Args:
         activity_id: Activity ID e.g. 'i12345678'
     """
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", activity_id):
+        return [{"error": "Invalid activity_id"}]
     return await icu_get(f"activity/{activity_id}/intervals")
 
 
@@ -522,7 +534,12 @@ if not READ_ONLY:
         Args:
             workouts: List of workout objects to create on the calendar.
         """
-        return await icu_post(f"athlete/{ATHLETE_ID}/events/bulk", workouts)
+        _PLAN_FIELDS = frozenset({
+            "start_date_local", "name", "type", "description",
+            "moving_time", "icu_training_load", "workout_doc",
+        })
+        safe = [{k: v for k, v in w.items() if k in _PLAN_FIELDS} for w in workouts]
+        return await icu_post(f"athlete/{ATHLETE_ID}/events/bulk", safe)
 
 
 def _summarise_activity(a: dict) -> dict:
@@ -1095,7 +1112,7 @@ async def handle_coach(request: Request) -> Response:
         data = {}
 
     activity_id = data.get("activity_id", "")
-    if not isinstance(activity_id, str) or len(activity_id) > 50:
+    if not isinstance(activity_id, str) or (activity_id and not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", activity_id)):
         return JSONResponse({"status": "error", "message": "Invalid activity_id"}, status_code=400)
 
     try:
