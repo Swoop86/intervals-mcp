@@ -103,6 +103,7 @@ _GOAL_PATH    = "/data/athlete_goal.json"
 _DEFAULT_PROFILE: dict = {
     "sport": "running",
     "age": None,
+    "location": "",
     "training_days_per_week": None,
     "easy_pace_min_per_km": None,
     "threshold_pace_min_per_km": None,
@@ -639,6 +640,7 @@ if not READ_ONLY:
         you want to change. Supported fields:
             sport                      e.g. "running", "cycling", "triathlon"
             age                        integer (years)
+            location                   city or "lat,lon" — used by get_weather
             training_days_per_week     integer
             easy_pace_min_per_km       float (e.g. 6.0 for 6:00/km)
             threshold_pace_min_per_km  float
@@ -650,7 +652,7 @@ if not READ_ONLY:
             updates: Dict of fields to update.
         """
         _PROFILE_FIELDS = frozenset({
-            "sport", "age", "training_days_per_week",
+            "sport", "age", "location", "training_days_per_week",
             "easy_pace_min_per_km", "threshold_pace_min_per_km",
             "weekly_volume_km", "known_limiters", "notes",
         })
@@ -728,6 +730,122 @@ if not READ_ONLY:
         _clear_goal()
         log.info("Race goal cleared")
         return {"status": "cleared"}
+
+
+@mcp.tool()
+async def get_weather(days: int = 7) -> dict:
+    """Get the weather forecast for the athlete's stored location.
+
+    Uses Open-Meteo (no API key required). Returns daily precipitation,
+    temperature, and wind speed for each day.
+
+    Call this when:
+    - The athlete asks about upcoming weather
+    - Deciding whether to move a long run to a drier day
+    - Asking "should I wear rain gear on Thursday?"
+    - Checking if conditions are suitable for an outdoor session
+
+    Requires `location` to be set in the athlete profile via update_profile.
+
+    Args:
+        days: Number of forecast days to fetch (1-14, default 7)
+    """
+    profile = _load_profile()
+    location = profile.get("location", "").strip()
+    if not location:
+        return {
+            "error": "No location set in athlete profile. "
+                     "Ask the athlete where they train and call update_profile with location='City, Country'."
+        }
+
+    days = max(1, min(14, days))
+
+    lat: float | None = None
+    lon: float | None = None
+    resolved_name = location
+
+    # Accept "lat,lon" form directly
+    parts = location.replace(" ", "").split(",")
+    if len(parts) == 2:
+        try:
+            lat, lon = float(parts[0]), float(parts[1])
+        except ValueError:
+            pass
+
+    if lat is None:
+        geo_r = await http().get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": location, "count": 1, "language": "en", "format": "json"},
+        )
+        geo_r.raise_for_status()
+        results = geo_r.json().get("results", [])
+        if not results:
+            return {"error": f"Could not find location: {location!r}"}
+        lat = results[0]["latitude"]
+        lon = results[0]["longitude"]
+        resolved_name = f"{results[0]['name']}, {results[0].get('country', '')}".strip(", ")
+
+    forecast_r = await http().get(
+        "https://api.open-meteo.com/v1/forecast",
+        params={
+            "latitude": lat,
+            "longitude": lon,
+            "daily": ",".join([
+                "weather_code",
+                "precipitation_sum",
+                "precipitation_probability_max",
+                "temperature_2m_max",
+                "temperature_2m_min",
+                "wind_speed_10m_max",
+            ]),
+            "forecast_days": days,
+            "timezone": "auto",
+        },
+    )
+    forecast_r.raise_for_status()
+    data = forecast_r.json()
+    daily = data.get("daily", {})
+    dates = daily.get("time", [])
+
+    def _wmo(code: int) -> str:
+        if code == 0:            return "Clear sky"
+        if code == 1:            return "Mainly clear"
+        if code == 2:            return "Partly cloudy"
+        if code == 3:            return "Overcast"
+        if code in (45, 48):     return "Fog"
+        if code in (51, 53):     return "Light drizzle"
+        if code == 55:           return "Dense drizzle"
+        if code in (61, 63):     return "Rain"
+        if code == 65:           return "Heavy rain"
+        if code in (71, 73):     return "Snow"
+        if code == 75:           return "Heavy snow"
+        if code in (80, 81):     return "Rain showers"
+        if code == 82:           return "Violent showers"
+        if code in (85, 86):     return "Snow showers"
+        if code == 95:           return "Thunderstorm"
+        if code in (96, 99):     return "Thunderstorm with hail"
+        return "Unknown"
+
+    codes   = daily.get("weather_code", [])
+    precip  = daily.get("precipitation_sum", [])
+    precip_prob = daily.get("precipitation_probability_max", [])
+    tmax    = daily.get("temperature_2m_max", [])
+    tmin    = daily.get("temperature_2m_min", [])
+    wind    = daily.get("wind_speed_10m_max", [])
+
+    forecast = []
+    for i, date in enumerate(dates):
+        forecast.append({
+            "date": date,
+            "conditions": _wmo(codes[i]) if i < len(codes) else "Unknown",
+            "precipitation_mm": precip[i] if i < len(precip) else None,
+            "precipitation_probability_pct": precip_prob[i] if i < len(precip_prob) else None,
+            "temp_max_c": tmax[i] if i < len(tmax) else None,
+            "temp_min_c": tmin[i] if i < len(tmin) else None,
+            "wind_max_kmh": wind[i] if i < len(wind) else None,
+        })
+
+    return {"location": resolved_name, "forecast": forecast}
 
 
 def _summarise_activity(a: dict) -> dict:

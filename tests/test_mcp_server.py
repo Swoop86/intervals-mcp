@@ -1523,3 +1523,113 @@ class TestClearRaceGoal:
         from mcp_server import clear_race_goal
         result = await clear_race_goal()
         assert result["status"] == "cleared"
+
+
+# ---------------------------------------------------------------------------
+# get_weather tool
+# ---------------------------------------------------------------------------
+
+_FAKE_GEO = {"results": [{"name": "Oslo", "country": "Norway", "latitude": 59.9127, "longitude": 10.7461}]}
+_FAKE_FORECAST = {
+    "daily": {
+        "time": ["2026-04-24", "2026-04-25", "2026-04-26"],
+        "weather_code": [61, 3, 0],
+        "precipitation_sum": [5.2, 0.0, 0.0],
+        "precipitation_probability_max": [80, 20, 5],
+        "temperature_2m_max": [12.0, 14.0, 16.0],
+        "temperature_2m_min": [6.0, 7.0, 8.0],
+        "wind_speed_10m_max": [20.0, 15.0, 10.0],
+    }
+}
+
+
+class TestGetWeather:
+    def _mock_http(self, geo_data=None, forecast_data=None):
+        """Return a mock that intercepts Open-Meteo requests."""
+        geo_data = geo_data or _FAKE_GEO
+        forecast_data = forecast_data or _FAKE_FORECAST
+
+        async def _mock_get(url, **kwargs):
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            if "geocoding-api" in url:
+                resp.json = MagicMock(return_value=geo_data)
+            else:
+                resp.json = MagicMock(return_value=forecast_data)
+            return resp
+
+        client = MagicMock()
+        client.get = _mock_get
+        return client
+
+    async def test_no_location_returns_error(self, profile_paths):
+        from mcp_server import get_weather
+        result = await get_weather()
+        assert "error" in result
+
+    async def test_returns_forecast_for_named_city(self, profile_paths):
+        import mcp_server as ms
+        ms._write_json_file(profile_paths["profile"], {"sport": "running", "location": "Oslo, Norway"})
+        mock_client = self._mock_http()
+        with patch.object(ms, "http", return_value=mock_client):
+            from mcp_server import get_weather
+            result = await get_weather(days=3)
+        assert result["location"] == "Oslo, Norway"
+        assert len(result["forecast"]) == 3
+        assert result["forecast"][0]["date"] == "2026-04-24"
+        assert result["forecast"][0]["conditions"] == "Rain"
+        assert result["forecast"][0]["precipitation_mm"] == 5.2
+
+    async def test_latlon_skips_geocoding(self, profile_paths):
+        import mcp_server as ms
+        ms._write_json_file(profile_paths["profile"], {"sport": "running", "location": "59.9127,10.7461"})
+        geo_calls = []
+
+        async def _mock_get(url, **kwargs):
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            if "geocoding-api" in url:
+                geo_calls.append(url)
+                resp.json = MagicMock(return_value=_FAKE_GEO)
+            else:
+                resp.json = MagicMock(return_value=_FAKE_FORECAST)
+            return resp
+
+        mock_client = MagicMock()
+        mock_client.get = _mock_get
+        with patch.object(ms, "http", return_value=mock_client):
+            from mcp_server import get_weather
+            await get_weather()
+        assert len(geo_calls) == 0
+
+    async def test_unknown_city_returns_error(self, profile_paths):
+        import mcp_server as ms
+        ms._write_json_file(profile_paths["profile"], {"sport": "running", "location": "NowhereVille"})
+        mock_client = self._mock_http(geo_data={"results": []})
+        with patch.object(ms, "http", return_value=mock_client):
+            from mcp_server import get_weather
+            result = await get_weather()
+        assert "error" in result
+
+    async def test_forecast_days_clamped_to_14(self, profile_paths):
+        import mcp_server as ms
+        ms._write_json_file(profile_paths["profile"], {"sport": "running", "location": "Oslo, Norway"})
+        captured_params = {}
+
+        async def _mock_get(url, **kwargs):
+            if "open-meteo.com/v1/forecast" in url:
+                captured_params.update(kwargs.get("params", {}))
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            if "geocoding" in url:
+                resp.json = MagicMock(return_value=_FAKE_GEO)
+            else:
+                resp.json = MagicMock(return_value=_FAKE_FORECAST)
+            return resp
+
+        mock_client = MagicMock()
+        mock_client.get = _mock_get
+        with patch.object(ms, "http", return_value=mock_client):
+            from mcp_server import get_weather
+            await get_weather(days=99)
+        assert captured_params.get("forecast_days") == 14

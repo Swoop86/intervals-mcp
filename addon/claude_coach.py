@@ -97,6 +97,7 @@ def load_athlete_profile() -> str:
         field_labels = {
             "sport": "Sport",
             "age": "Age",
+            "location": "Training location",
             "training_days_per_week": "Training days/week",
             "easy_pace_min_per_km": "Easy pace (min/km)",
             "threshold_pace_min_per_km": "Threshold pace (min/km)",
