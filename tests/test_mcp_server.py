@@ -1543,6 +1543,65 @@ _FAKE_FORECAST = {
 }
 
 
+class TestSetCoachingStyle:
+    async def test_preset_polarized(self, profile_paths):
+        from mcp_server import set_coaching_style
+        result = await set_coaching_style("polarized")
+        assert result["coaching_methodology"] == "Polarized (80/20)"
+        assert "80%" in result["coaching_description"]
+
+    async def test_preset_maffetone(self, profile_paths):
+        from mcp_server import set_coaching_style
+        result = await set_coaching_style("maffetone")
+        assert result["coaching_methodology"] == "Maffetone / MAF"
+        assert "MAF" in result["coaching_description"]
+
+    async def test_preset_jack_daniels(self, profile_paths):
+        from mcp_server import set_coaching_style
+        result = await set_coaching_style("jack_daniels")
+        assert result["coaching_methodology"] == "Jack Daniels VDOT"
+
+    async def test_preset_norwegian(self, profile_paths):
+        from mcp_server import set_coaching_style
+        result = await set_coaching_style("norwegian")
+        assert "Norwegian" in result["coaching_methodology"]
+
+    async def test_preset_pyramidal(self, profile_paths):
+        from mcp_server import set_coaching_style
+        result = await set_coaching_style("pyramidal")
+        assert "Pyramidal" in result["coaching_methodology"]
+
+    async def test_custom_requires_description(self, profile_paths):
+        from mcp_server import set_coaching_style
+        result = await set_coaching_style("custom")
+        assert "error" in result
+
+    async def test_custom_with_description(self, profile_paths):
+        from mcp_server import set_coaching_style
+        result = await set_coaching_style("custom", custom_description="High volume, low intensity base first.")
+        assert result["coaching_methodology"] == "Custom"
+        assert "High volume" in result["coaching_description"]
+
+    async def test_unknown_methodology_returns_error(self, profile_paths):
+        from mcp_server import set_coaching_style
+        result = await set_coaching_style("zatsiorsky")
+        assert "error" in result
+
+    async def test_persists_to_profile(self, profile_paths):
+        from mcp_server import set_coaching_style, get_profile
+        await set_coaching_style("polarized")
+        profile = await get_profile()
+        assert profile["coaching_methodology"] == "Polarized (80/20)"
+        assert "80%" in profile["coaching_description"]
+
+    async def test_overwrites_previous_style(self, profile_paths):
+        from mcp_server import set_coaching_style, get_profile
+        await set_coaching_style("polarized")
+        await set_coaching_style("pyramidal")
+        profile = await get_profile()
+        assert profile["coaching_methodology"] == "Pyramidal"
+
+
 class TestGetWeather:
     def _mock_http(self, geo_data=None, forecast_data=None):
         """Return a mock that intercepts Open-Meteo requests."""

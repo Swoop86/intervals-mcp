@@ -60,7 +60,24 @@ Claude calls `update_profile`. Your location enables weather lookups.
 
 Claude calls `set_race_goal` and automatically determines your current training phase (Base/Build/Peak/Taper/Race week) based on weeks remaining. Every coaching review from that point is framed around the goal. When the race is done: *"Clear my race goal"*.
 
-### 6. Weather-aware planning
+### 6. Set a coaching methodology (optional)
+
+Without a methodology, Claude applies general endurance principles. Choose a preset for a consistent coaching philosophy across every conversation:
+
+> *"Set my coaching style to polarized."*
+
+| Preset | Description |
+|--------|-------------|
+| `polarized` | 80% easy (Z1), 20% hard (Z3). Avoid threshold. Fartlek + VO2max intervals. |
+| `maffetone` | Train below MAF HR (180 − age) to build aerobic base. No intensity until base is solid. |
+| `jack_daniels` | VDOT-based paces from recent race time. Five intensity zones. |
+| `norwegian` | Two controlled threshold sessions/week at ~75–80% HRmax. High volume, all else easy. |
+| `pyramidal` | ~70% easy, ~20% threshold, ~10% hard. Traditional approach for recreational runners. |
+| `custom` | Define your own training philosophy in free text. |
+
+The selected methodology is stored in the profile and applied to every coaching review, including automated `/coach` reviews.
+
+### 7. Weather-aware planning
 
 Once your location is set, Claude can check the forecast before scheduling:
 
@@ -68,7 +85,7 @@ Once your location is set, Claude can check the forecast before scheduling:
 
 Claude calls `get_weather` (Open-Meteo, no API key needed) and `get_planned_workouts`, then reschedules accordingly. It will also ask about rain gear for borderline conditions rather than just cancelling a session.
 
-### 7. Webhook (optional)
+### 8. Webhook (optional)
 
 In intervals.icu: **Settings → Developer Settings → Webhooks**
 

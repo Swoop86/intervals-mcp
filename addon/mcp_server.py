@@ -110,6 +110,74 @@ _DEFAULT_PROFILE: dict = {
     "weekly_volume_km": None,
     "known_limiters": [],
     "notes": "",
+    "coaching_methodology": "",
+    "coaching_description": "",
+}
+
+# Built-in coaching methodology presets: slug → (display_name, coaching_instructions)
+_METHODOLOGY_PRESETS: dict[str, tuple[str, str]] = {
+    "polarized": (
+        "Polarized (80/20)",
+        """Polarized training: 80% of sessions at easy/conversational effort (Zone 1, <75% HRmax, RPE ≤3), 20% at hard effort (Zone 3, >87% HRmax, RPE ≥7). Actively avoid the 'moderate/threshold' middle zone — it creates fatigue without sufficient adaptation stimulus.
+
+Key sessions: long easy runs, fartlek (unstructured speed play by feel), 4–6×4–8min VO2max intervals, strides.
+Weekly structure: 4–5 easy sessions, 1–2 quality sessions maximum.
+TSS should come primarily from volume, not intensity.
+Flag any session where HR drifted into Zone 2 (75–87% HRmax) as a polarization leak — recommend keeping future efforts either easier or harder.
+Prescribe VO2max work in this ratio: for every 5 easy sessions, allow 1 hard session.""",
+    ),
+    "maffetone": (
+        "Maffetone / MAF",
+        """Maffetone Method: Build aerobic base exclusively below MAF heart rate (default 180 − age, ±5 for health/training history).
+
+No intervals, tempo runs, or race efforts until aerobic base is established (typically 3–6 months minimum).
+Monitor pace at MAF HR over weeks — it must improve (get faster) as aerobic capacity develops. Stagnation means more base work is needed.
+Flag any session exceeding MAF HR as a methodology violation — recommend slowing to stay aerobic.
+MAF HR formula adjustments:
+  − Subtract 5 if injury-prone, sick frequently, or inconsistent training history
+  + 5 if training >2 years with no injuries and recent progress
+Progress to intensity ONLY once MAF pace has clearly plateaued AND base is solid (typically 6+ months).""",
+    ),
+    "jack_daniels": (
+        "Jack Daniels VDOT",
+        """Jack Daniels VDOT system: Derive all training paces from the athlete's most recent race performance using their VDOT score.
+
+Five training types (use current VDOT to look up paces):
+  E  — Easy (59–74% VO2max): conversational pace, all recovery and base runs
+  M  — Marathon pace (75–84% VO2max): goal marathon effort
+  T  — Threshold/Tempo (83–88% VO2max): 'comfortably hard', 20–40min continuous or cruise intervals
+  I  — Intervals (97–100% VO2max): 3–5min reps, full recovery between
+  R  — Repetitions (105–120% VO2max): short fast reps (200–400m), full recovery
+
+Weekly quality work limits: T pace ≤10% of weekly volume; I/R work 1 session/week max.
+E pace must dominate weekly volume.
+Update VDOT and paces after each race result.
+Quality session examples: 6×1km at T pace (cruise intervals), 5×3min at I pace, 10×200m at R pace.""",
+    ),
+    "norwegian": (
+        "Norwegian Double Threshold",
+        """Norwegian Double Threshold method: Two threshold sessions per week at low-lactate accumulation effort (~75–80% HRmax, RPE 5–6, equivalent to ~2–2.5 mmol/L blood lactate). All other sessions fully easy.
+
+Threshold session structure: 8–12×1km at threshold pace (2–3min rest), or 4–6×2km (3–4min rest), or 30–40min continuous at threshold. Sessions feel controlled — never hard.
+High total weekly volume at easy pace (~80% of sessions).
+Do NOT push into VO2max territory in threshold sessions — controlled aerobic accumulation is the mechanism. Flag sessions where the athlete reported pushing too hard.
+Adapted without lactate monitor: threshold pace = pace sustainable for ~60min in a race, HR 75–80% max.
+VO2max sessions rarely used (maybe once per month near competition).""",
+    ),
+    "pyramidal": (
+        "Pyramidal",
+        """Pyramidal intensity distribution: most volume easy, significant threshold, limited high intensity.
+
+Approximate zone distribution:
+  ~70% Zone 1–2 (easy, <75% HRmax): base runs, recovery, long runs
+  ~20% Zone 3 (threshold, 75–87% HRmax): tempo runs, marathon pace, sustained efforts
+  ~10% Zone 4–5 (hard, >87% HRmax): VO2max intervals, race-pace sessions
+
+Key sessions: 20–40min tempo runs, 4–6×1km cruise intervals, one hard quality session/week.
+More traditional and intuitive than polarized — allows sustained threshold efforts.
+Good for recreational runners and those who find purely easy/hard (polarized) difficult to sustain.
+Flag if the athlete is doing more than one hard session and one threshold session in the same week.""",
+    ),
 }
 
 
@@ -664,6 +732,55 @@ if not READ_ONLY:
         _write_json_file(_PROFILE_PATH, profile)
         log.info("Athlete profile updated: %s", list(safe.keys()))
         return profile
+
+
+    @mcp.tool()
+    async def set_coaching_style(
+        methodology: str,
+        custom_description: str | None = None,
+    ) -> dict:
+        """Choose a coaching methodology that persists across all conversations.
+
+        The selected methodology is stored in the athlete profile and automatically
+        applied to every coaching review — both via Claude.ai (review_training) and
+        the automated /coach endpoint.
+
+        Built-in presets (pass the slug as methodology):
+          polarized     — 80% easy (Zone 1), 20% hard (Zone 3). Avoid threshold.
+                          Key sessions: long easy runs, fartlek, VO2max intervals.
+          maffetone     — Train below MAF HR (180 − age) to build aerobic base.
+                          No intervals until base is established.
+          jack_daniels  — VDOT-based paces from recent race time. Five zones:
+                          Easy, Marathon, Threshold, Interval, Repetition.
+          norwegian     — Two threshold sessions/week at ~75–80% HRmax.
+                          High volume, controlled effort. All else easy.
+          pyramidal     — ~70% easy, ~20% threshold, ~10% hard.
+                          Traditional approach; allows comfortably-hard efforts.
+          custom        — Define your own (requires custom_description).
+
+        Args:
+            methodology:        Preset slug (see above) or "custom"
+            custom_description: Required when methodology="custom". Free-text
+                                description of the training philosophy, session
+                                types, intensity distribution, and priorities.
+        """
+        if methodology == "custom":
+            if not custom_description:
+                return {"error": "custom_description is required when methodology='custom'"}
+            display_name = "Custom"
+            description = custom_description
+        elif methodology in _METHODOLOGY_PRESETS:
+            display_name, description = _METHODOLOGY_PRESETS[methodology]
+        else:
+            valid = list(_METHODOLOGY_PRESETS.keys()) + ["custom"]
+            return {"error": f"Unknown methodology {methodology!r}. Valid options: {valid}"}
+
+        profile = _load_profile()
+        profile["coaching_methodology"] = display_name
+        profile["coaching_description"] = description
+        _write_json_file(_PROFILE_PATH, profile)
+        log.info("Coaching style set: %s", display_name)
+        return {"coaching_methodology": display_name, "coaching_description": description}
 
 
     @mcp.tool()

@@ -120,6 +120,17 @@ def load_race_goal() -> dict | None:
     return _read_json_file(_GOAL_PATH)
 
 
+def load_coaching_style() -> tuple[str, str] | None:
+    """Returns (display_name, description) or None if no style is set."""
+    data = _read_json_file(_PROFILE_PATH)
+    if data:
+        name = data.get("coaching_methodology", "")
+        desc = data.get("coaching_description", "")
+        if name and desc:
+            return name, desc
+    return None
+
+
 def today_iso() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
@@ -288,7 +299,17 @@ COACHING_TOOL = {
 }
 
 
-def _build_system_prompt(athlete_profile: str, race_goal: dict | None = None) -> str:
+def _build_system_prompt(
+    athlete_profile: str,
+    race_goal: dict | None = None,
+    coaching_style: tuple[str, str] | None = None,
+) -> str:
+    if coaching_style:
+        style_name, style_desc = coaching_style
+        methodology_section = f"\nCOACHING METHODOLOGY: {style_name}\n{style_desc}\n"
+    else:
+        methodology_section = "\nCOACHING METHODOLOGY: General endurance principles — no specific methodology set.\n"
+
     if race_goal:
         goal_section = (
             f"\nRACE GOAL: {race_goal.get('event_name')} on {race_goal.get('event_date')}"
@@ -322,7 +343,7 @@ you analyse it and proactively adjust the upcoming plan if needed.
 
 ATHLETE PROFILE:
 {athlete_profile}
-{mode_context}
+{methodology_section}{mode_context}
 YOUR JOB after each workout:
 1. Analyse the completed workout — effort vs intent, HR response, pacing, TSS
 2. Check wellness trends (HRV, resting HR, sleep) for recovery signals
@@ -365,10 +386,11 @@ Analyse and submit your coaching review via the tool."""
 async def call_claude(client: httpx.AsyncClient, context: dict) -> dict:
     profile = load_athlete_profile()
     race_goal = load_race_goal()
+    coaching_style = load_coaching_style()
     payload = {
         "model": CLAUDE_MODEL,
         "max_tokens": MAX_TOKENS,
-        "system": _build_system_prompt(profile, race_goal),
+        "system": _build_system_prompt(profile, race_goal, coaching_style),
         "messages": [{"role": "user", "content": _build_user_message(context)}],
         "tools": [COACHING_TOOL],
         "tool_choice": {"type": "tool", "name": "submit_coaching_review"},

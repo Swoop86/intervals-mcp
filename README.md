@@ -113,6 +113,49 @@ Once the race is done:
 
 ---
 
+## Coaching methodology
+
+Without a methodology set, Claude applies general endurance principles. Choose a preset to lock in a consistent coaching philosophy that applies to **every conversation** — not just the current one.
+
+> **You:** Set my coaching style to polarized.
+>
+> **Claude:** *calls `set_coaching_style("polarized")`*
+>
+> Done — switching to Polarized (80/20). From now on, 80% of your sessions should be at easy/conversational effort (Zone 1, <75% HRmax), and 20% at hard effort (Zone 3, >87% HRmax). I'll flag any session that drifts into the moderate threshold zone as a polarization leak and recommend going either easier or harder.
+
+### Built-in presets
+
+| Preset | What it means |
+|--------|--------------|
+| `polarized` | 80% easy (Z1), 20% hard (Z3). Avoid the moderate zone entirely. Key sessions: long easy runs, fartlek, 4–6×8min VO2max intervals. |
+| `maffetone` | Train exclusively below MAF heart rate (180 − age). No intervals until the aerobic base is established. Monitor pace at MAF HR over months. |
+| `jack_daniels` | Paces derived from recent race time (VDOT score). Five zones: Easy, Marathon, Threshold, Interval, Repetition. Classic structured approach. |
+| `norwegian` | Two threshold sessions/week at ~75–80% HRmax (controlled, not hard). All other sessions easy. High weekly volume. |
+| `pyramidal` | ~70% easy, ~20% threshold, ~10% hard. Traditional distribution; allows sustained tempo efforts. Good for recreational runners. |
+| `custom` | Describe your own philosophy — any text, as detailed as you like. |
+
+### Switching methodologies
+
+> **You:** Actually, switch me to Jack Daniels — I just ran a 10K in 51 minutes.
+>
+> **Claude:** *calls `set_coaching_style("jack_daniels")`*
+>
+> Switched to Jack Daniels VDOT. With a 51-minute 10K your VDOT is approximately 40. Your training paces are:
+> - Easy: 6:50–7:30/km
+> - Threshold: 5:50/km
+> - Interval: 5:15/km
+> I'll prescribe sessions using these zones and update them after your next race.
+
+### Custom methodology
+
+> **You:** I want to use the Lydiard method — long aerobic base phase, then hill bounding, then sharpening intervals before the race.
+>
+> **Claude:** *calls `set_coaching_style("custom", custom_description="Lydiard periodization: ...")`*
+
+Check what's currently set: *"What coaching methodology am I using?"* → Claude calls `get_profile`.
+
+---
+
 ## Weather-aware scheduling
 
 Once your location is set in the profile, Claude can check the forecast before scheduling or moving workouts.
