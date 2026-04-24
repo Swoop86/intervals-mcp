@@ -709,6 +709,13 @@ class TestMcpAuthMiddleware:
             )
         assert r.status_code != 401
 
+    async def test_401_includes_www_authenticate_header(self, client):
+        r = await client.post("/mcp", content=b"{}", headers={"Content-Type": "application/json"})
+        assert r.status_code == 401
+        assert "www-authenticate" in r.headers
+        assert "Bearer" in r.headers["www-authenticate"]
+        assert "resource_metadata" in r.headers["www-authenticate"]
+
 
 # ---------------------------------------------------------------------------
 # /.well-known/oauth-authorization-server

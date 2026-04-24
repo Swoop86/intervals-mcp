@@ -810,7 +810,13 @@ class MCPAuthMiddleware(BaseHTTPMiddleware):
 
         if not _validate_oauth_token(request):
             log.warning("Unauthorized /mcp from %s", ip)
-            return PlainTextResponse("Unauthorized", status_code=401)
+            host = request.headers.get("host", "")
+            resource_metadata = f"https://{host}/.well-known/oauth-protected-resource"
+            return PlainTextResponse(
+                "Unauthorized",
+                status_code=401,
+                headers={"WWW-Authenticate": f'Bearer realm="mcp", resource_metadata="{resource_metadata}"'},
+            )
 
         return await call_next(request)
 
