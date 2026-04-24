@@ -26,6 +26,7 @@ import uvicorn
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response, PlainTextResponse
 from starlette.routing import Mount, Route
@@ -64,6 +65,7 @@ API_KEY        = _safe_str(os.environ.get("INTERVALS_API_KEY"))
 PORT           = _safe_int(os.environ.get("INTERVALS_PORT"), 8765)
 WEBHOOK_SECRET = _safe_str(os.environ.get("INTERVALS_WEBHOOK_SECRET"))
 COACH_SECRET   = _safe_str(os.environ.get("COACH_SECRET"))
+READ_ONLY      = os.environ.get("READ_ONLY", "").lower() in ("true", "1", "yes")
 HA_TOKEN       = _safe_str(os.environ.get("HA_TOKEN"))
 HA_URL         = "http://supervisor/core"
 BASE_URL       = "https://intervals.icu/api/v1"
@@ -317,40 +319,41 @@ async def get_planned_workouts(days_ahead: int = 14) -> list[dict]:
     )
 
 
-@mcp.tool()
-async def create_workout(
-    date: str,
-    name: str,
-    description: str,
-    sport_type: str = "Run",
-    moving_time: int | None = None,
-    target_tss: float | None = None,
-    workout_doc: dict | None = None,
-) -> dict:
-    """Create a planned workout on the calendar. Syncs to Garmin if connected.
+if not READ_ONLY:
+    @mcp.tool()
+    async def create_workout(
+        date: str,
+        name: str,
+        description: str,
+        sport_type: str = "Run",
+        moving_time: int | None = None,
+        target_tss: float | None = None,
+        workout_doc: dict | None = None,
+    ) -> dict:
+        """Create a planned workout on the calendar. Syncs to Garmin if connected.
 
-    Args:
-        date: ISO date YYYY-MM-DD
-        name: Workout name
-        description: Full workout description with structure and targets
-        sport_type: Run, Ride, Swim, etc. (default Run)
-        moving_time: Estimated duration in seconds
-        target_tss: Target Training Stress Score
-        workout_doc: Structured workout in intervals.icu format
-    """
-    payload = {
-        "start_date_local": date,
-        "name": name,
-        "type": sport_type,
-        "description": description,
-    }
-    if moving_time is not None:
-        payload["moving_time"] = moving_time
-    if target_tss is not None:
-        payload["icu_training_load"] = target_tss
-    if workout_doc is not None:
-        payload["workout_doc"] = workout_doc
-    return await icu_post(f"athlete/{ATHLETE_ID}/events", payload)
+        Args:
+            date: ISO date YYYY-MM-DD
+            name: Workout name
+            description: Full workout description with structure and targets
+            sport_type: Run, Ride, Swim, etc. (default Run)
+            moving_time: Estimated duration in seconds
+            target_tss: Target Training Stress Score
+            workout_doc: Structured workout in intervals.icu format
+        """
+        payload = {
+            "start_date_local": date,
+            "name": name,
+            "type": sport_type,
+            "description": description,
+        }
+        if moving_time is not None:
+            payload["moving_time"] = moving_time
+        if target_tss is not None:
+            payload["icu_training_load"] = target_tss
+        if workout_doc is not None:
+            payload["workout_doc"] = workout_doc
+        return await icu_post(f"athlete/{ATHLETE_ID}/events", payload)
 
 
 @mcp.tool()
@@ -411,55 +414,57 @@ async def review_training(activity_id: str = "") -> dict:
     return await fetch_context(http(), activity_id)
 
 
-@mcp.tool()
-async def update_workout(
-    event_id: int,
-    name: str | None = None,
-    description: str | None = None,
-    moving_time: int | None = None,
-    target_tss: float | None = None,
-    date: str | None = None,
-) -> dict:
-    """Modify a planned workout on the calendar.
+if not READ_ONLY:
+    @mcp.tool()
+    async def update_workout(
+        event_id: int,
+        name: str | None = None,
+        description: str | None = None,
+        moving_time: int | None = None,
+        target_tss: float | None = None,
+        date: str | None = None,
+    ) -> dict:
+        """Modify a planned workout on the calendar.
 
-    Only fields you provide are updated. Syncs to Garmin if connected.
+        Only fields you provide are updated. Syncs to Garmin if connected.
 
-    Args:
-        event_id: Calendar event ID (from get_planned_workouts)
-        name: New workout name
-        description: New description with structure/targets
-        moving_time: New estimated duration in seconds
-        target_tss: New target Training Stress Score
-        date: New date as ISO YYYY-MM-DD (reschedule)
-    """
-    payload: dict[str, Any] = {}
-    if name is not None:
-        payload["name"] = name
-    if description is not None:
-        payload["description"] = description
-    if moving_time is not None:
-        payload["moving_time"] = moving_time
-    if target_tss is not None:
-        payload["icu_training_load"] = target_tss
-    if date is not None:
-        payload["start_date_local"] = date
-    if not payload:
-        return {"error": "No fields provided to update"}
-    return await icu_put(f"athlete/{ATHLETE_ID}/events/{event_id}", payload)
+        Args:
+            event_id: Calendar event ID (from get_planned_workouts)
+            name: New workout name
+            description: New description with structure/targets
+            moving_time: New estimated duration in seconds
+            target_tss: New target Training Stress Score
+            date: New date as ISO YYYY-MM-DD (reschedule)
+        """
+        payload: dict[str, Any] = {}
+        if name is not None:
+            payload["name"] = name
+        if description is not None:
+            payload["description"] = description
+        if moving_time is not None:
+            payload["moving_time"] = moving_time
+        if target_tss is not None:
+            payload["icu_training_load"] = target_tss
+        if date is not None:
+            payload["start_date_local"] = date
+        if not payload:
+            return {"error": "No fields provided to update"}
+        return await icu_put(f"athlete/{ATHLETE_ID}/events/{event_id}", payload)
 
 
-@mcp.tool()
-async def delete_workout(event_id: int) -> dict:
-    """Delete a planned workout from the calendar.
+if not READ_ONLY:
+    @mcp.tool()
+    async def delete_workout(event_id: int) -> dict:
+        """Delete a planned workout from the calendar.
 
-    Use when removing a session is more appropriate than modifying it
-    (e.g. extra rest day needed, duplicate entry, race replaces workout).
+        Use when removing a session is more appropriate than modifying it
+        (e.g. extra rest day needed, duplicate entry, race replaces workout).
 
-    Args:
-        event_id: Calendar event ID (from get_planned_workouts)
-    """
-    await icu_delete(f"athlete/{ATHLETE_ID}/events/{event_id}")
-    return {"status": "deleted", "event_id": event_id}
+        Args:
+            event_id: Calendar event ID (from get_planned_workouts)
+        """
+        await icu_delete(f"athlete/{ATHLETE_ID}/events/{event_id}")
+        return {"status": "deleted", "event_id": event_id}
 
 
 def _summarise_activity(a: dict) -> dict:
@@ -594,7 +599,7 @@ async def handle_oauth_server_metadata(request: Request) -> Response:
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code"],
         "code_challenge_methods_supported": ["S256"],
-        "token_endpoint_auth_methods_supported": ["none"],
+        "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic", "none"],
         "scopes_supported": ["mcp"],
     })
 
@@ -1076,7 +1081,7 @@ if not ATHLETE_ID or not API_KEY:
     raise SystemExit(1)
 
 if not COACH_SECRET:
-    log.warning("COACH_SECRET not set — /mcp and /coach endpoints are unauthenticated!")
+    log.error("COACH_SECRET not set — /mcp and /coach are UNAUTHENTICATED and open to the internet!")
 if not WEBHOOK_SECRET:
     log.warning("WEBHOOK_SECRET not set — /webhook accepts unsigned payloads!")
 
@@ -1095,16 +1100,26 @@ app = Starlette(
         Route("/revoke", handle_revoke, methods=["POST"]),
         Route("/.well-known/oauth-authorization-server", handle_oauth_server_metadata, methods=["GET"]),
         Route("/.well-known/oauth-protected-resource", handle_oauth_resource_metadata, methods=["GET"]),
+        Route("/.well-known/oauth-protected-resource/mcp", handle_oauth_resource_metadata, methods=["GET"]),
         # Mount FastMCP last — it handles /mcp
         Mount("/", app=mcp_app),
     ],
-    middleware=[Middleware(MCPAuthMiddleware)],
+    middleware=[
+        Middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_headers=["*"],
+        ),
+        Middleware(MCPAuthMiddleware),
+    ],
     lifespan=lifespan,
 )
 
 
 if __name__ == "__main__":
     log.info("MCP endpoint:     http://0.0.0.0:%d/mcp  (OAuth: %s, token expiry: %d days)", PORT, "yes" if COACH_SECRET else "NO — set coach_secret!", _TOKEN_EXPIRY // 86400)
+    log.info("Read-only mode:   %s (write tools %s)", READ_ONLY, "DISABLED" if READ_ONLY else "enabled")
     log.info("OAuth endpoints:  /authorize /token /register /.well-known/oauth-authorization-server")
     log.info("Webhook receiver: http://0.0.0.0:%d/webhook  (secret: %s)", PORT, "yes" if WEBHOOK_SECRET else "NO")
     log.info("Coach endpoint:   http://0.0.0.0:%d/coach  (auth: %s)", PORT, "yes" if COACH_SECRET else "NO")

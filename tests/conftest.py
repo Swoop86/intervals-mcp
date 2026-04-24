@@ -14,6 +14,7 @@ os.environ.setdefault("INTERVALS_PORT", "8765")
 os.environ.setdefault("HA_TOKEN", "")
 os.environ.setdefault("CLAUDE_MODEL", "claude-sonnet-4-6")
 os.environ.setdefault("TOKEN_EXPIRY_DAYS", "1")
+os.environ.setdefault("READ_ONLY", "false")
 
 # Add addon/ so test files can import mcp_server / claude_coach directly
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "addon"))

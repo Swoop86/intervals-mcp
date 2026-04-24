@@ -56,6 +56,14 @@ The addon has a built-in OAuth 2.1 authorization server — no external auth pro
 | `claude_model` | No | Claude model for `/coach` (default: claude-sonnet-4-6) |
 | `webhook_secret` | No | Secret configured in intervals.icu webhook settings |
 | `ha_mobile_service` | No | HA notify service for mobile push (e.g. `notify.mobile_app_my_phone`) |
+| `read_only` | No | Set to `true` to disable write tools (`create_workout`, `update_workout`, `delete_workout`). Recommended when exposing the server publicly. Default: `false`. |
+
+## Security
+
+- **`coach_secret` is strongly recommended** when the addon is exposed to the internet. Without it, anyone can query your training data.
+- Rate limiting: 5 requests/s per IP (burst 10). Login lockout: 5 failed attempts → 1 hour block.
+- OAuth tokens are stored as SHA-256 hashes — the raw token is never written to disk.
+- Use `read_only: true` to prevent Claude from modifying your training calendar.
 
 ## Development
 

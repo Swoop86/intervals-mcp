@@ -748,6 +748,14 @@ class TestOAuthServerMetadata:
         body = (await client.get("/.well-known/oauth-authorization-server")).json()
         assert "authorization_code" in body.get("grant_types_supported", [])
 
+    async def test_cors_preflight_returns_allow_origin(self, client):
+        r = await client.options(
+            "/.well-known/oauth-authorization-server",
+            headers={"Origin": "https://claude.ai", "Access-Control-Request-Method": "GET"},
+        )
+        assert r.status_code in (200, 204)
+        assert "access-control-allow-origin" in r.headers
+
 
 # ---------------------------------------------------------------------------
 # /.well-known/oauth-protected-resource
@@ -1314,3 +1322,34 @@ class TestDeleteWorkoutTool:
         call_path = mock_del.call_args[0][0]
         assert "events/42" in call_path
         assert result == {"status": "deleted", "event_id": 42}
+
+
+# ---------------------------------------------------------------------------
+# /.well-known/oauth-protected-resource/mcp path alias
+# ---------------------------------------------------------------------------
+
+class TestOAuthResourceMetadataMcpAlias:
+    async def test_mcp_path_alias_returns_200(self, client):
+        r = await client.get("/.well-known/oauth-protected-resource/mcp")
+        assert r.status_code == 200
+
+    async def test_mcp_alias_same_body_as_base_path(self, client):
+        base = (await client.get("/.well-known/oauth-protected-resource")).json()
+        alias = (await client.get("/.well-known/oauth-protected-resource/mcp")).json()
+        assert base == alias
+
+
+# ---------------------------------------------------------------------------
+# READ_ONLY mode
+# ---------------------------------------------------------------------------
+
+class TestReadOnlyMode:
+    def test_read_only_false_in_tests(self):
+        import mcp_server
+        assert mcp_server.READ_ONLY is False
+
+    def test_write_tools_present_when_read_only_false(self):
+        import mcp_server
+        assert hasattr(mcp_server, "create_workout")
+        assert hasattr(mcp_server, "update_workout")
+        assert hasattr(mcp_server, "delete_workout")
