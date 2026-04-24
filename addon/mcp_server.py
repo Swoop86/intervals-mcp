@@ -364,6 +364,20 @@ async def get_activity_detail(activity_id: str) -> dict:
 
 
 @mcp.tool()
+async def get_activity_intervals(activity_id: str) -> list[dict]:
+    """Get the structured intervals/laps for a specific activity.
+
+    Returns each interval with duration, distance, power, HR, pace and TSS —
+    useful for analysing effort distribution, pacing execution, and zone compliance
+    within a single workout.
+
+    Args:
+        activity_id: Activity ID e.g. 'i12345678'
+    """
+    return await icu_get(f"activity/{activity_id}/intervals")
+
+
+@mcp.tool()
 async def review_training(activity_id: str = "") -> dict:
     """Fetch comprehensive training context to perform a coaching review.
 
@@ -581,13 +595,19 @@ async def handle_oauth_server_metadata(request: Request) -> Response:
         "grant_types_supported": ["authorization_code"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none"],
+        "scopes_supported": ["mcp"],
     })
 
 
 async def handle_oauth_resource_metadata(request: Request) -> Response:
     host = request.headers.get("host", "")
     base = f"https://{host}"
-    return JSONResponse({"resource": base, "authorization_servers": [base]})
+    return JSONResponse({
+        "resource": base,
+        "authorization_servers": [base],
+        "scopes_supported": ["mcp"],
+        "bearer_methods_supported": ["header"],
+    })
 
 
 async def handle_register(request: Request) -> Response:
@@ -608,7 +628,7 @@ async def handle_register(request: Request) -> Response:
             "redirect_uris": redirect_uris,
             "client_name": body.get("client_name", ""),
         }
-    log.info("OAuth client registered: %s (%s)", client_id, body.get("client_name", ""))
+    log.info("OAuth client registered: %s name=%r uris=%s", client_id, body.get("client_name", ""), redirect_uris)
     return JSONResponse({
         "client_id": client_id,
         "redirect_uris": redirect_uris,
