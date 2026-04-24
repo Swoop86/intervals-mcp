@@ -843,11 +843,11 @@ class MCPAuthMiddleware(BaseHTTPMiddleware):
                 headers={"WWW-Authenticate": f'Bearer realm="mcp", resource_metadata="{resource_metadata}"'},
             )
 
-        # FastMCP's transport_security rejects any Host that isn't localhost/127.0.0.1
-        # (DNS-rebinding protection). Rewrite to localhost since we already validated
-        # the OAuth token above — the external hostname is legitimate.
+        # FastMCP's transport_security rejects external Host headers (DNS-rebinding
+        # protection). Allowed list is ['localhost:*', '127.0.0.1:*'] — must include
+        # the port. Rewrite after auth passes since the external hostname is legitimate.
         request.scope["headers"] = [
-            (b"host", b"localhost") if k == b"host" else (k, v)
+            (b"host", f"localhost:{PORT}".encode()) if k == b"host" else (k, v)
             for k, v in request.scope["headers"]
         ]
 
