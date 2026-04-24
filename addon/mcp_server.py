@@ -87,6 +87,81 @@ RATE_BURST        = 10
 RATE_BUCKET_TTL   = 3600
 
 # ---------------------------------------------------------------------------
+# Athlete profile + race goal — optional Fernet-encrypted JSON on /data
+# ---------------------------------------------------------------------------
+try:
+    from cryptography.fernet import Fernet as _Fernet, InvalidToken as _FernetInvalidToken
+    _CRYPTO_AVAILABLE = True
+except ImportError:
+    _Fernet = None
+    _FernetInvalidToken = Exception
+    _CRYPTO_AVAILABLE = False
+
+_PROFILE_PATH = "/data/athlete_profile.json"
+_GOAL_PATH    = "/data/athlete_goal.json"
+
+_DEFAULT_PROFILE: dict = {
+    "sport": "running",
+    "age": None,
+    "training_days_per_week": None,
+    "easy_pace_min_per_km": None,
+    "threshold_pace_min_per_km": None,
+    "weekly_volume_km": None,
+    "known_limiters": [],
+    "notes": "",
+}
+
+
+def _fernet():
+    if not _CRYPTO_AVAILABLE or not COACH_SECRET:
+        return None
+    dk = hashlib.pbkdf2_hmac("sha256", COACH_SECRET.encode(), ATHLETE_ID.encode(), 100_000)
+    return _Fernet(base64.urlsafe_b64encode(dk))
+
+
+def _read_json_file(path: str) -> dict | None:
+    try:
+        raw = open(path, "rb").read()
+    except FileNotFoundError:
+        return None
+    f = _fernet()
+    if f:
+        try:
+            raw = f.decrypt(raw)
+        except _FernetInvalidToken:
+            log.warning("Could not decrypt %s — key mismatch?", path)
+            return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def _write_json_file(path: str, data: dict) -> None:
+    raw = json.dumps(data, indent=2).encode()
+    f = _fernet()
+    if f:
+        raw = f.encrypt(raw)
+    with open(path, "wb") as fh:
+        fh.write(raw)
+
+
+def _load_profile() -> dict:
+    return _read_json_file(_PROFILE_PATH) or dict(_DEFAULT_PROFILE)
+
+
+def _load_goal() -> dict | None:
+    return _read_json_file(_GOAL_PATH)
+
+
+def _clear_goal() -> None:
+    try:
+        os.remove(_GOAL_PATH)
+    except FileNotFoundError:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Shared HTTP client
 # ---------------------------------------------------------------------------
 _httpx: Optional[httpx.AsyncClient] = None
@@ -423,7 +498,10 @@ async def review_training(activity_id: str = "") -> dict:
                      Leave empty to use the most recent activity.
     """
     from claude_coach import fetch_context
-    return await fetch_context(http(), activity_id)
+    ctx = await fetch_context(http(), activity_id)
+    ctx["athlete_profile"] = _load_profile()
+    ctx["race_goal"] = _load_goal()
+    return ctx
 
 
 if not READ_ONLY:
@@ -540,6 +618,116 @@ if not READ_ONLY:
         })
         safe = [{k: v for k, v in w.items() if k in _PLAN_FIELDS} for w in workouts]
         return await icu_post(f"athlete/{ATHLETE_ID}/events/bulk", safe)
+
+
+@mcp.tool()
+async def get_profile() -> dict:
+    """Return the stored athlete profile (training preferences, paces, limiters).
+
+    Use update_profile to change any field. Use set_race_goal to switch into
+    event-prep (periodized) coaching mode.
+    """
+    return _load_profile()
+
+
+if not READ_ONLY:
+    @mcp.tool()
+    async def update_profile(updates: dict) -> dict:
+        """Update one or more fields in the athlete profile.
+
+        Merges the given fields into the existing profile. Pass only the fields
+        you want to change. Supported fields:
+            sport                      e.g. "running", "cycling", "triathlon"
+            age                        integer (years)
+            training_days_per_week     integer
+            easy_pace_min_per_km       float (e.g. 6.0 for 6:00/km)
+            threshold_pace_min_per_km  float
+            weekly_volume_km           float
+            known_limiters             list of strings
+            notes                      free-text string
+
+        Args:
+            updates: Dict of fields to update.
+        """
+        _PROFILE_FIELDS = frozenset({
+            "sport", "age", "training_days_per_week",
+            "easy_pace_min_per_km", "threshold_pace_min_per_km",
+            "weekly_volume_km", "known_limiters", "notes",
+        })
+        profile = _load_profile()
+        safe = {k: v for k, v in updates.items() if k in _PROFILE_FIELDS}
+        if not safe:
+            return {"error": "No valid fields provided"}
+        profile.update(safe)
+        _write_json_file(_PROFILE_PATH, profile)
+        log.info("Athlete profile updated: %s", list(safe.keys()))
+        return profile
+
+
+    @mcp.tool()
+    async def set_race_goal(
+        event_name: str,
+        event_date: str,
+        distance_km: float,
+        target_time: str | None = None,
+        notes: str | None = None,
+    ) -> dict:
+        """Store a race goal — switches coaching into periodized event-prep mode.
+
+        Once a race goal is set, coaching reviews will structure training across
+        Base → Build → Peak → Taper phases leading to the event date.
+        The current phase is inferred automatically from weeks remaining.
+
+        Args:
+            event_name:  Name of the event, e.g. "Oslo Half Marathon"
+            event_date:  Race date ISO YYYY-MM-DD
+            distance_km: Race distance in km (e.g. 10.0, 21.1, 42.2)
+            target_time: Optional target e.g. "sub-2:00" or "1:55:00"
+            notes:       Optional context e.g. "first marathon, focus on finishing"
+        """
+        from datetime import date as _date
+        try:
+            race_date = _date.fromisoformat(event_date)
+        except ValueError:
+            return {"error": f"Invalid event_date {event_date!r} — use YYYY-MM-DD"}
+        weeks_out = (race_date - _date.today()).days / 7
+        if weeks_out < 0:
+            return {"error": "event_date is in the past"}
+        if weeks_out > 16:
+            phase = "base"
+        elif weeks_out > 8:
+            phase = "build"
+        elif weeks_out > 4:
+            phase = "peak"
+        elif weeks_out > 1:
+            phase = "taper"
+        else:
+            phase = "race_week"
+        goal = {
+            "event_name": event_name,
+            "event_date": event_date,
+            "distance_km": distance_km,
+            "target_time": target_time,
+            "notes": notes,
+            "current_phase": phase,
+            "weeks_to_race": round(weeks_out, 1),
+            "set_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _write_json_file(_GOAL_PATH, goal)
+        log.info("Race goal set: %s on %s (phase=%s, %.1f weeks out)",
+                 event_name, event_date, phase, weeks_out)
+        return goal
+
+
+    @mcp.tool()
+    async def clear_race_goal() -> dict:
+        """Remove the current race goal — returns coaching to general improvement mode.
+
+        Use this after the race is done or if plans have changed.
+        """
+        _clear_goal()
+        log.info("Race goal cleared")
+        return {"status": "cleared"}
 
 
 def _summarise_activity(a: dict) -> dict:

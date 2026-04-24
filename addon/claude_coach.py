@@ -7,6 +7,8 @@ for structured coaching, applies calendar adjustments, notifies HA.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
 import json
 import asyncio
@@ -30,6 +32,7 @@ def _safe_str(val: str | None) -> str:
 ATHLETE_ID        = _safe_str(os.environ.get("INTERVALS_ATHLETE_ID"))
 API_KEY           = _safe_str(os.environ.get("INTERVALS_API_KEY"))
 ANTHROPIC_API_KEY = _safe_str(os.environ.get("ANTHROPIC_API_KEY"))
+COACH_SECRET      = _safe_str(os.environ.get("COACH_SECRET"))
 CLAUDE_MODEL      = _safe_str(os.environ.get("CLAUDE_MODEL")) or "claude-sonnet-4-6"
 HA_TOKEN          = _safe_str(os.environ.get("HA_TOKEN"))
 HA_MOBILE_SERVICE = _safe_str(os.environ.get("HA_MOBILE_SERVICE"))
@@ -44,33 +47,76 @@ MAX_TOKENS       = 2048
 MAX_RETRIES      = 2
 RETRY_DELAY      = 3
 
-PROFILE_PATH     = Path("/config/intervals_mcp/athlete_profile.md")
+_PROFILE_PATH = "/data/athlete_profile.json"
+_GOAL_PATH    = "/data/athlete_goal.json"
 
-DEFAULT_PROFILE = """# Athlete Profile
+_DEFAULT_PROFILE_STR = """Athlete profile not yet configured.
+Use the update_profile and set_race_goal MCP tools to personalise coaching."""
 
-Edit this file to give Claude context about you. Example:
+# ---------------------------------------------------------------------------
+# Encrypted JSON storage helpers (mirrors mcp_server.py)
+# ---------------------------------------------------------------------------
+try:
+    from cryptography.fernet import Fernet as _Fernet, InvalidToken as _FernetInvalidToken
+    _CRYPTO_AVAILABLE = True
+except ImportError:
+    _Fernet = None
+    _FernetInvalidToken = Exception
+    _CRYPTO_AVAILABLE = False
 
-- Goal race: Half marathon on 2026-09-15
-- Target time: sub-2:00
-- Current easy pace: ~6:00/km
-- Threshold pace: ~5:00/km
-- Weekly volume target: ~40 km
-- Known limiters: occasional left knee soreness on hills
-- Training days: Mon/Wed/Thu/Sat/Sun
-- Rest days: Tue/Fri
-"""
+
+def _fernet():
+    if not _CRYPTO_AVAILABLE or not COACH_SECRET:
+        return None
+    dk = hashlib.pbkdf2_hmac("sha256", COACH_SECRET.encode(), ATHLETE_ID.encode(), 100_000)
+    return _Fernet(base64.urlsafe_b64encode(dk))
+
+
+def _read_json_file(path: str) -> dict | None:
+    try:
+        raw = open(path, "rb").read()
+    except FileNotFoundError:
+        return None
+    f = _fernet()
+    if f:
+        try:
+            raw = f.decrypt(raw)
+        except _FernetInvalidToken:
+            log.warning("Could not decrypt %s", path)
+            return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
 
 
 def load_athlete_profile() -> str:
-    try:
-        PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if not PROFILE_PATH.exists():
-            PROFILE_PATH.write_text(DEFAULT_PROFILE, encoding="utf-8")
-            log.info("Created default athlete profile at %s", PROFILE_PATH)
-        return PROFILE_PATH.read_text(encoding="utf-8")
-    except Exception as e:
-        log.warning("Couldn't read profile from %s: %s", PROFILE_PATH, e)
-        return DEFAULT_PROFILE
+    data = _read_json_file(_PROFILE_PATH)
+    if data:
+        lines = []
+        field_labels = {
+            "sport": "Sport",
+            "age": "Age",
+            "training_days_per_week": "Training days/week",
+            "easy_pace_min_per_km": "Easy pace (min/km)",
+            "threshold_pace_min_per_km": "Threshold pace (min/km)",
+            "weekly_volume_km": "Weekly volume (km)",
+            "known_limiters": "Known limiters",
+            "notes": "Notes",
+        }
+        for key, label in field_labels.items():
+            val = data.get(key)
+            if val is None or val == "" or val == []:
+                continue
+            if isinstance(val, list):
+                val = ", ".join(str(v) for v in val)
+            lines.append(f"- {label}: {val}")
+        return "\n".join(lines) if lines else _DEFAULT_PROFILE_STR
+    return _DEFAULT_PROFILE_STR
+
+
+def load_race_goal() -> dict | None:
+    return _read_json_file(_GOAL_PATH)
 
 
 def today_iso() -> str:
@@ -241,7 +287,32 @@ COACHING_TOOL = {
 }
 
 
-def _build_system_prompt(athlete_profile: str) -> str:
+def _build_system_prompt(athlete_profile: str, race_goal: dict | None = None) -> str:
+    if race_goal:
+        goal_section = (
+            f"\nRACE GOAL: {race_goal.get('event_name')} on {race_goal.get('event_date')}"
+            f" ({race_goal.get('distance_km')} km)\n"
+        )
+        if race_goal.get("target_time"):
+            goal_section += f"Target: {race_goal['target_time']}\n"
+        goal_section += (
+            f"Current phase: {race_goal.get('current_phase', 'unknown').upper()}"
+            f" ({race_goal.get('weeks_to_race', '?')} weeks to race)\n"
+        )
+        if race_goal.get("notes"):
+            goal_section += f"Notes: {race_goal['notes']}\n"
+        goal_section += """
+PERIODIZATION PHASES:
+- Base (>16 weeks out): build aerobic base, high volume, low intensity (80/20 easy/hard)
+- Build (8-16 weeks): introduce quality sessions — tempo, intervals, progression runs
+- Peak (4-8 weeks): race-specific work, simulate race conditions, peak fitness
+- Taper (1-4 weeks): reduce volume ~30%, maintain intensity, arrive fresh
+- Race week (<1 week): minimal stress, short sharp efforts, conserve energy
+"""
+        mode_context = goal_section
+    else:
+        mode_context = "\nMODE: General improvement — no specific event targeted. Focus on building aerobic fitness and long-term consistency.\n"
+
     return f"""You are an expert endurance running coach specialising in training periodization,
 heart rate variability, and load management.
 
@@ -250,7 +321,7 @@ you analyse it and proactively adjust the upcoming plan if needed.
 
 ATHLETE PROFILE:
 {athlete_profile}
-
+{mode_context}
 YOUR JOB after each workout:
 1. Analyse the completed workout — effort vs intent, HR response, pacing, TSS
 2. Check wellness trends (HRV, resting HR, sleep) for recovery signals
@@ -292,10 +363,11 @@ Analyse and submit your coaching review via the tool."""
 
 async def call_claude(client: httpx.AsyncClient, context: dict) -> dict:
     profile = load_athlete_profile()
+    race_goal = load_race_goal()
     payload = {
         "model": CLAUDE_MODEL,
         "max_tokens": MAX_TOKENS,
-        "system": _build_system_prompt(profile),
+        "system": _build_system_prompt(profile, race_goal),
         "messages": [{"role": "user", "content": _build_user_message(context)}],
         "tools": [COACHING_TOOL],
         "tool_choice": {"type": "tool", "name": "submit_coaching_review"},

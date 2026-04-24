@@ -1235,7 +1235,10 @@ class TestReviewTrainingTool:
         with patch("claude_coach.fetch_context", new=AsyncMock(return_value=fake_context)):
             from mcp_server import review_training
             result = await review_training()
-        assert result == fake_context
+        # review_training adds athlete_profile and race_goal to context
+        assert result["athlete_id"] == "i999999"
+        assert "athlete_profile" in result
+        assert "race_goal" in result
 
     async def test_passes_activity_id(self):
         fake_context = {"athlete_id": "i999999", "activity": {"id": "act123"}}
@@ -1393,3 +1396,130 @@ class TestReadOnlyMode:
         assert hasattr(mcp_server, "update_workout")
         assert hasattr(mcp_server, "delete_workout")
         assert hasattr(mcp_server, "create_plan")
+
+
+# ---------------------------------------------------------------------------
+# Athlete profile + race goal — get_profile, update_profile, set_race_goal,
+# clear_race_goal
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def profile_paths(tmp_path):
+    """Redirect profile/goal file paths to a temporary directory for isolation."""
+    profile = str(tmp_path / "athlete_profile.json")
+    goal = str(tmp_path / "athlete_goal.json")
+    with patch.object(mcp_server, "_PROFILE_PATH", profile), \
+         patch.object(mcp_server, "_GOAL_PATH", goal):
+        yield {"profile": profile, "goal": goal}
+
+
+class TestGetProfile:
+    async def test_returns_default_when_no_file(self, profile_paths):
+        from mcp_server import get_profile
+        result = await get_profile()
+        assert result["sport"] == "running"
+        assert "notes" in result
+
+    async def test_returns_stored_profile(self, profile_paths):
+        mcp_server._write_json_file(profile_paths["profile"], {"sport": "cycling", "age": 35, "notes": "test"})
+        from mcp_server import get_profile
+        result = await get_profile()
+        assert result["sport"] == "cycling"
+        assert result["age"] == 35
+
+
+class TestUpdateProfile:
+    async def test_merges_fields(self, profile_paths):
+        from mcp_server import update_profile
+        result = await update_profile({"sport": "cycling", "age": 30})
+        assert result["sport"] == "cycling"
+        assert result["age"] == 30
+
+    async def test_preserves_unset_fields(self, profile_paths):
+        from mcp_server import update_profile
+        await update_profile({"sport": "cycling"})
+        result = await update_profile({"age": 25})
+        assert result["sport"] == "cycling"
+        assert result["age"] == 25
+
+    async def test_rejects_unknown_fields(self, profile_paths):
+        from mcp_server import update_profile
+        result = await update_profile({"malicious_field": "evil", "sport": "running"})
+        assert "malicious_field" not in result
+        assert result["sport"] == "running"
+
+    async def test_returns_error_on_empty_updates(self, profile_paths):
+        from mcp_server import update_profile
+        result = await update_profile({})
+        assert "error" in result
+
+    async def test_writes_to_file(self, profile_paths):
+        import json
+        from mcp_server import update_profile
+        await update_profile({"sport": "triathlon"})
+        # File should exist and be readable (plain JSON in test since no encryption key override)
+        raw = open(profile_paths["profile"], "rb").read()
+        # In tests COACH_SECRET is set, so file may be encrypted; just verify it exists and is non-empty
+        assert len(raw) > 0
+
+
+class TestSetRaceGoal:
+    async def test_stores_goal_and_returns_it(self, profile_paths):
+        from mcp_server import set_race_goal
+        result = await set_race_goal(
+            event_name="Oslo 10K",
+            event_date="2027-01-01",
+            distance_km=10.0,
+            target_time="sub-50:00",
+        )
+        assert result["event_name"] == "Oslo 10K"
+        assert result["distance_km"] == 10.0
+        assert result["target_time"] == "sub-50:00"
+        assert "current_phase" in result
+        assert "weeks_to_race" in result
+
+    async def test_base_phase_more_than_16_weeks(self, profile_paths):
+        from mcp_server import set_race_goal
+        from datetime import date, timedelta
+        far_date = (date.today() + timedelta(weeks=20)).isoformat()
+        result = await set_race_goal("Future Race", far_date, 42.2)
+        assert result["current_phase"] == "base"
+
+    async def test_taper_phase_2_to_4_weeks(self, profile_paths):
+        from mcp_server import set_race_goal
+        from datetime import date, timedelta
+        soon = (date.today() + timedelta(weeks=3)).isoformat()
+        result = await set_race_goal("Near Race", soon, 21.1)
+        assert result["current_phase"] == "taper"
+
+    async def test_race_week_within_1_week(self, profile_paths):
+        from mcp_server import set_race_goal
+        from datetime import date, timedelta
+        very_soon = (date.today() + timedelta(days=5)).isoformat()
+        result = await set_race_goal("This Weekend", very_soon, 5.0)
+        assert result["current_phase"] == "race_week"
+
+    async def test_past_date_returns_error(self, profile_paths):
+        from mcp_server import set_race_goal
+        result = await set_race_goal("Old Race", "2020-01-01", 10.0)
+        assert "error" in result
+
+    async def test_invalid_date_format_returns_error(self, profile_paths):
+        from mcp_server import set_race_goal
+        result = await set_race_goal("Bad Date Race", "not-a-date", 10.0)
+        assert "error" in result
+
+
+class TestClearRaceGoal:
+    async def test_clears_existing_goal(self, profile_paths):
+        import os
+        mcp_server._write_json_file(profile_paths["goal"], {"event_name": "Test Race"})
+        from mcp_server import clear_race_goal
+        result = await clear_race_goal()
+        assert result["status"] == "cleared"
+        assert not os.path.exists(profile_paths["goal"])
+
+    async def test_no_op_when_no_goal_exists(self, profile_paths):
+        from mcp_server import clear_race_goal
+        result = await clear_race_goal()
+        assert result["status"] == "cleared"
