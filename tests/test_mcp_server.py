@@ -1324,6 +1324,45 @@ class TestDeleteWorkoutTool:
         assert result == {"status": "deleted", "event_id": 42}
 
 
+class TestCreatePlanTool:
+    async def test_calls_bulk_endpoint(self):
+        import mcp_server
+
+        workouts = [
+            {"start_date_local": "2026-04-25", "name": "Easy Run", "type": "Run", "description": "30min easy"},
+            {"start_date_local": "2026-04-26", "name": "Rest", "type": "Run", "description": "Rest day"},
+        ]
+        post_response = [{"id": 1}, {"id": 2}]
+
+        with patch.object(mcp_server, "icu_post", new=AsyncMock(return_value=post_response)) as mock_post:
+            from mcp_server import create_plan
+            result = await create_plan(workouts)
+
+        mock_post.assert_called_once()
+        call_path = mock_post.call_args[0][0]
+        assert "events/bulk" in call_path
+        assert mock_post.call_args[0][1] == workouts
+        assert result == post_response
+
+    async def test_passes_workout_doc(self):
+        import mcp_server
+
+        workout_doc = {
+            "description": "test", "duration": 3600, "ftp": 280,
+            "target": "POWER",
+            "steps": [{"reps": 1, "steps": [{"duration": 3600, "power": {"start": 65, "end": 75, "units": "%ftp"}}]}],
+        }
+        workouts = [{"start_date_local": "2026-04-25", "name": "Ride", "type": "Ride",
+                     "description": "Aerobic", "workout_doc": workout_doc}]
+
+        with patch.object(mcp_server, "icu_post", new=AsyncMock(return_value=[{"id": 1}])) as mock_post:
+            from mcp_server import create_plan
+            await create_plan(workouts)
+
+        sent_payload = mock_post.call_args[0][1]
+        assert sent_payload[0]["workout_doc"] == workout_doc
+
+
 # ---------------------------------------------------------------------------
 # /.well-known/oauth-protected-resource/mcp path alias
 # ---------------------------------------------------------------------------
@@ -1353,3 +1392,4 @@ class TestReadOnlyMode:
         assert hasattr(mcp_server, "create_workout")
         assert hasattr(mcp_server, "update_workout")
         assert hasattr(mcp_server, "delete_workout")
+        assert hasattr(mcp_server, "create_plan")

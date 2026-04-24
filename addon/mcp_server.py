@@ -404,7 +404,7 @@ async def review_training(activity_id: str = "") -> dict:
        ACWR = 7-day TSS / 28-day average TSS
        - Safe range 0.8–1.3; flag ≥1.3; alarm ≥1.5
     4. Current training phase (Base/Build/Peak/Taper/Deload/Overreached)
-    5. Specific plan adjustments if needed (use update_workout / delete_workout)
+    5. Specific plan adjustments if needed (use update_workout / delete_workout / create_plan)
 
     Args:
         activity_id: Optional specific activity ID to focus on (e.g. 'i12345678').
@@ -465,6 +465,64 @@ if not READ_ONLY:
         """
         await icu_delete(f"athlete/{ATHLETE_ID}/events/{event_id}")
         return {"status": "deleted", "event_id": event_id}
+
+
+if not READ_ONLY:
+    @mcp.tool()
+    async def create_plan(workouts: list[dict]) -> list[dict]:
+        """Create multiple planned workouts in one call — use this to build a training plan.
+
+        Prefer this over calling create_workout repeatedly. Workouts sync to Garmin Connect
+        automatically (up to 7 days ahead) if the athlete has connected Garmin in settings.
+
+        Each dict in the list supports these fields:
+            start_date_local  (required) ISO date YYYY-MM-DD
+            name              (required) Workout name
+            type              (required) Sport: Run, Ride, Swim, VirtualRide, etc.
+            description       (required) Free-text workout description
+            moving_time       Estimated duration in seconds
+            icu_training_load Target TSS
+            workout_doc       Structured workout — enables interval-by-interval targets on
+                              Garmin and other devices (see format below)
+
+        workout_doc for cycling (power):
+            {
+                "description": "5x3min threshold",
+                "duration": 3600,
+                "ftp": 280,
+                "target": "POWER",
+                "steps": [
+                    {"reps": 1, "steps": [
+                        {"duration": 600, "power": {"start": 55, "end": 65, "units": "%ftp"}}
+                    ]},
+                    {"reps": 5, "steps": [
+                        {"duration": 180, "power": {"start": 90, "end": 95, "units": "%ftp"}},
+                        {"duration": 90,  "power": {"start": 50, "end": 55, "units": "%ftp"}}
+                    ]},
+                    {"reps": 1, "steps": [
+                        {"duration": 600, "power": {"start": 55, "end": 65, "units": "%ftp"}}
+                    ]}
+                ]
+            }
+
+        workout_doc for running (pace):
+            {
+                "description": "Easy 30min",
+                "duration": 1800,
+                "threshold_pace": 2.778,
+                "pace_units": "MINS_KM",
+                "target": "PACE",
+                "steps": [
+                    {"reps": 1, "steps": [
+                        {"duration": 1800, "pace": {"start": 75, "end": 85, "units": "%threshold"}}
+                    ]}
+                ]
+            }
+
+        Args:
+            workouts: List of workout objects to create on the calendar.
+        """
+        return await icu_post(f"athlete/{ATHLETE_ID}/events/bulk", workouts)
 
 
 def _summarise_activity(a: dict) -> dict:
