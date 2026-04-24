@@ -1,6 +1,6 @@
 name: "Intervals.icu MCP Server"
 description: "MCP server exposing Intervals.icu training data to AI assistants like Claude, with webhook receiver and automated coaching via Claude API."
-version: "2.5.5"
+version: "2.5.6"
 slug: "intervals_mcp"
 init: false
 arch:

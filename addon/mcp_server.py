@@ -473,9 +473,11 @@ def _summarise_activity(a: dict) -> dict:
 # ---------------------------------------------------------------------------
 _oauth_clients: dict[str, dict] = {}     # client_id → registration data
 _oauth_codes: dict[str, dict] = {}       # code → {client_id, redirect_uri, ...}
-_oauth_tokens: dict[str, dict] = {}      # token → {client_id, expires_at}
+_oauth_tokens: dict[str, dict] = {}      # sha256(token) → {client_id, expires_at}
 _authorize_failures: dict[str, dict] = {} # ip → {count, locked_until}
 _oauth_lock = asyncio.Lock()
+
+_TOKEN_STORE = "/data/oauth_tokens.json"
 
 _TOKEN_EXPIRY       = _safe_int(os.environ.get("TOKEN_EXPIRY_DAYS"), 180) * 86400
 _CODE_EXPIRY        = 600   # seconds
@@ -490,6 +492,34 @@ def _gen_token(n: int = 32) -> str:
 
 def _ts() -> int:
     return int(time.time())
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _save_tokens() -> None:
+    """Persist the hashed token store atomically. Silent on I/O error."""
+    try:
+        tmp = _TOKEN_STORE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(_oauth_tokens, f)
+        os.replace(tmp, _TOKEN_STORE)
+    except OSError:
+        pass
+
+
+def _load_tokens() -> None:
+    """Load persisted hashed tokens, discarding any that have already expired."""
+    try:
+        with open(_TOKEN_STORE) as f:
+            data = json.load(f)
+        now = _ts()
+        loaded = {k: v for k, v in data.items() if v.get("expires_at", 0) > now}
+        _oauth_tokens.update(loaded)
+        log.info("Loaded %d persisted OAuth token(s)", len(loaded))
+    except OSError:
+        pass
 
 
 def _pkce_verify(verifier: str, challenge: str) -> bool:
@@ -529,11 +559,12 @@ def _validate_oauth_token(request: Request) -> bool:
     if not auth.lower().startswith("bearer "):
         return False
     token = auth[7:].strip()
-    token_data = _oauth_tokens.get(token)
+    h = _hash_token(token)
+    token_data = _oauth_tokens.get(h)
     if not token_data:
         return False
     if token_data["expires_at"] < _ts():
-        _oauth_tokens.pop(token, None)
+        _oauth_tokens.pop(h, None)
         return False
     return True
 
@@ -739,10 +770,11 @@ async def handle_token(request: Request) -> Response:
 
     token = _gen_token(32)
     async with _oauth_lock:
-        _oauth_tokens[token] = {
+        _oauth_tokens[_hash_token(token)] = {
             "client_id": client_id,
             "expires_at": _ts() + _TOKEN_EXPIRY,
         }
+        _save_tokens()
     log.info("OAuth token issued to client %s", client_id)
     return JSONResponse({
         "access_token": token,
@@ -759,6 +791,7 @@ async def handle_revoke(request: Request) -> Response:
     async with _oauth_lock:
         count = len(_oauth_tokens)
         _oauth_tokens.clear()
+        _save_tokens()
     log.warning("All OAuth tokens revoked (%d tokens cleared)", count)
     return JSONResponse({"revoked": count})
 
@@ -999,6 +1032,7 @@ async def handle_health(request: Request) -> Response:
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: Starlette):
+    _load_tokens()
     async with mcp_app.router.lifespan_context(app):
         try:
             yield

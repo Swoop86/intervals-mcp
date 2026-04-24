@@ -19,7 +19,7 @@ from mcp_server import (
     _check_header_token, _get_ip, _normalise_ip,
     _check_rate_limit, _prune_rate_buckets,
     _is_replay, _summarise_activity,
-    _validate_oauth_token, _pkce_verify, _ts,
+    _validate_oauth_token, _pkce_verify, _ts, _hash_token,
     _is_locked_out, _record_failure, _clear_failures,
     today_iso, days_ago_iso,
     RATE_BURST, app,
@@ -100,9 +100,9 @@ def registered_client():
 
 @pytest.fixture
 def valid_token():
-    """Insert a live OAuth token into the token store and return it."""
+    """Insert a live OAuth token into the token store (keyed by hash) and return the plaintext token."""
     token = "test_valid_bearer_token"
-    mcp_server._oauth_tokens[token] = {
+    mcp_server._oauth_tokens[_hash_token(token)] = {
         "client_id": "test_client",
         "expires_at": _ts() + 3600,
     }
@@ -499,25 +499,25 @@ class TestValidateOauthToken:
 
     def test_expired_token_rejected(self):
         token = "expired_token"
-        mcp_server._oauth_tokens[token] = {
+        mcp_server._oauth_tokens[_hash_token(token)] = {
             "client_id": "test",
             "expires_at": _ts() - 1,
         }
         req = _mock_request({"authorization": f"Bearer {token}"})
         with patch.object(mcp_server, "COACH_SECRET", "test_coach_secret"):
             assert _validate_oauth_token(req) is False
-        assert token not in mcp_server._oauth_tokens  # evicted
+        assert _hash_token(token) not in mcp_server._oauth_tokens  # evicted
 
     def test_expired_token_evicted_from_store(self):
         token = "will_be_evicted"
-        mcp_server._oauth_tokens[token] = {
+        mcp_server._oauth_tokens[_hash_token(token)] = {
             "client_id": "test",
             "expires_at": _ts() - 100,
         }
         req = _mock_request({"authorization": f"Bearer {token}"})
         with patch.object(mcp_server, "COACH_SECRET", "test_coach_secret"):
             _validate_oauth_token(req)
-        assert token not in mcp_server._oauth_tokens
+        assert _hash_token(token) not in mcp_server._oauth_tokens
 
 
 # ---------------------------------------------------------------------------
@@ -989,7 +989,7 @@ class TestTokenEndpoint:
             "client_id": registered_client,
         })
         token = r.json()["access_token"]
-        assert token in mcp_server._oauth_tokens
+        assert _hash_token(token) in mcp_server._oauth_tokens
 
     async def test_code_is_single_use(self, client, registered_client):
         code = self._insert_code(registered_client, "https://claude.ai/oauth/callback")
@@ -1122,15 +1122,15 @@ class TestRevokeEndpoint:
         assert r.status_code == 401
 
     async def test_clears_all_tokens(self, client, valid_token):
-        assert valid_token in mcp_server._oauth_tokens
+        assert _hash_token(valid_token) in mcp_server._oauth_tokens
         r = await client.post("/revoke", headers={"X-Coach-Token": "test_coach_secret"})
         assert r.status_code == 200
         assert r.json()["revoked"] == 1
-        assert valid_token not in mcp_server._oauth_tokens
+        assert _hash_token(valid_token) not in mcp_server._oauth_tokens
 
     async def test_returns_count_of_revoked_tokens(self, client):
-        mcp_server._oauth_tokens["tok1"] = {"client_id": "c1", "expires_at": _ts() + 3600}
-        mcp_server._oauth_tokens["tok2"] = {"client_id": "c2", "expires_at": _ts() + 3600}
+        mcp_server._oauth_tokens[_hash_token("tok1")] = {"client_id": "c1", "expires_at": _ts() + 3600}
+        mcp_server._oauth_tokens[_hash_token("tok2")] = {"client_id": "c2", "expires_at": _ts() + 3600}
         r = await client.post("/revoke", headers={"X-Coach-Token": "test_coach_secret"})
         assert r.json()["revoked"] == 2
         assert len(mcp_server._oauth_tokens) == 0
