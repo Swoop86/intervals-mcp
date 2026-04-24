@@ -471,13 +471,17 @@ def _summarise_activity(a: dict) -> dict:
 # OAuth 2.1 — built-in authorization server
 # State is in-memory. Tokens survive until expiry or process restart.
 # ---------------------------------------------------------------------------
-_oauth_clients: dict[str, dict] = {}  # client_id → registration data
-_oauth_codes: dict[str, dict] = {}    # code → {client_id, redirect_uri, ...}
-_oauth_tokens: dict[str, dict] = {}   # token → {client_id, expires_at}
+_oauth_clients: dict[str, dict] = {}     # client_id → registration data
+_oauth_codes: dict[str, dict] = {}       # code → {client_id, redirect_uri, ...}
+_oauth_tokens: dict[str, dict] = {}      # token → {client_id, expires_at}
+_authorize_failures: dict[str, dict] = {} # ip → {count, locked_until}
 _oauth_lock = asyncio.Lock()
 
-_TOKEN_EXPIRY = 3600  # seconds
-_CODE_EXPIRY  = 600   # seconds
+_TOKEN_EXPIRY       = 3600  # seconds
+_CODE_EXPIRY        = 600   # seconds
+_MAX_LOGIN_FAILURES = 5
+_LOCKOUT_SECONDS    = 3600  # 1 hour
+_MAX_CLIENTS        = 10
 
 
 def _gen_token(n: int = 32) -> str:
@@ -492,6 +496,30 @@ def _pkce_verify(verifier: str, challenge: str) -> bool:
     digest = hashlib.sha256(verifier.encode()).digest()
     computed = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
     return hmac.compare_digest(computed, challenge)
+
+
+def _is_locked_out(ip: str) -> bool:
+    entry = _authorize_failures.get(ip)
+    if not entry:
+        return False
+    if not entry["locked_until"]:
+        return False  # failures recorded but threshold not yet reached
+    if _ts() < entry["locked_until"]:
+        return True
+    del _authorize_failures[ip]  # lock expired — evict
+    return False
+
+
+def _record_failure(ip: str) -> None:
+    entry = _authorize_failures.setdefault(ip, {"count": 0, "locked_until": 0})
+    entry["count"] += 1
+    if entry["count"] >= _MAX_LOGIN_FAILURES:
+        entry["locked_until"] = _ts() + _LOCKOUT_SECONDS
+        log.warning("IP %s locked out after %d failed login attempts", ip, entry["count"])
+
+
+def _clear_failures(ip: str) -> None:
+    _authorize_failures.pop(ip, None)
 
 
 def _validate_oauth_token(request: Request) -> bool:
@@ -543,6 +571,8 @@ async def handle_register(request: Request) -> Response:
 
     client_id = _gen_token(16)
     async with _oauth_lock:
+        if len(_oauth_clients) >= _MAX_CLIENTS:
+            return JSONResponse({"error": "temporarily_unavailable"}, status_code=503)
         _oauth_clients[client_id] = {
             "redirect_uris": redirect_uris,
             "client_name": body.get("client_name", ""),
@@ -616,6 +646,16 @@ async def handle_authorize(request: Request) -> Response:
         return HTMLResponse(_LOGIN_TEMPLATE.format(error="", qs=qs))
 
     # POST — validate password
+    ip = _get_ip(request)
+    if _is_locked_out(ip):
+        return HTMLResponse(
+            _LOGIN_TEMPLATE.format(
+                error='<p class="err">Too many failed attempts — try again in 1 hour.</p>',
+                qs=qs,
+            ),
+            status_code=429,
+        )
+
     form_data = await request.form()
     password = form_data.get("password", "")
 
@@ -629,11 +669,13 @@ async def handle_authorize(request: Request) -> Response:
         )
 
     if not _safe_eq(password, COACH_SECRET):
+        _record_failure(ip)
         return HTMLResponse(
             _LOGIN_TEMPLATE.format(error='<p class="err">Incorrect password.</p>', qs=qs),
             status_code=401,
         )
 
+    _clear_failures(ip)
     code = _gen_token(32)
     async with _oauth_lock:
         _oauth_codes[code] = {

@@ -20,6 +20,7 @@ from mcp_server import (
     _check_rate_limit, _prune_rate_buckets,
     _is_replay, _summarise_activity,
     _validate_oauth_token, _pkce_verify, _ts,
+    _is_locked_out, _record_failure, _clear_failures,
     today_iso, days_ago_iso,
     RATE_BURST, app,
 )
@@ -70,6 +71,13 @@ def reset_oauth_state():
     mcp_server._oauth_clients.clear()
     mcp_server._oauth_codes.clear()
     mcp_server._oauth_tokens.clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_authorize_failures():
+    mcp_server._authorize_failures.clear()
+    yield
+    mcp_server._authorize_failures.clear()
 
 
 @pytest.fixture
@@ -399,6 +407,45 @@ class TestDateHelpers:
 
     def test_days_ago_iso_format(self):
         datetime.strptime(days_ago_iso(30), "%Y-%m-%d")
+
+
+# ---------------------------------------------------------------------------
+# Login lockout helpers
+# ---------------------------------------------------------------------------
+
+class TestLoginLockout:
+    def test_unknown_ip_not_locked(self):
+        assert _is_locked_out("1.2.3.4") is False
+
+    def test_below_threshold_not_locked(self):
+        ip = "10.0.0.1"
+        for _ in range(mcp_server._MAX_LOGIN_FAILURES - 1):
+            _record_failure(ip)
+        assert _is_locked_out(ip) is False
+
+    def test_locked_after_max_failures(self):
+        ip = "10.0.0.2"
+        for _ in range(mcp_server._MAX_LOGIN_FAILURES):
+            _record_failure(ip)
+        assert _is_locked_out(ip) is True
+
+    def test_clear_removes_lockout(self):
+        ip = "10.0.0.3"
+        for _ in range(mcp_server._MAX_LOGIN_FAILURES):
+            _record_failure(ip)
+        _clear_failures(ip)
+        assert _is_locked_out(ip) is False
+
+    def test_expired_lock_not_locked(self):
+        ip = "10.0.0.4"
+        mcp_server._authorize_failures[ip] = {"count": 10, "locked_until": _ts() - 1}
+        assert _is_locked_out(ip) is False
+        assert ip not in mcp_server._authorize_failures  # evicted
+
+    def test_future_lock_is_locked(self):
+        ip = "10.0.0.5"
+        mcp_server._authorize_failures[ip] = {"count": 5, "locked_until": _ts() + 3600}
+        assert _is_locked_out(ip) is True
 
 
 # ---------------------------------------------------------------------------
@@ -772,6 +819,13 @@ class TestRegisterEndpoint:
         r2 = await client.post("/register", json={"redirect_uris": ["https://b.com/cb"]})
         assert r1.json()["client_id"] != r2.json()["client_id"]
 
+    async def test_registration_cap_returns_503(self, client):
+        with patch.object(mcp_server, "_MAX_CLIENTS", 2):
+            await client.post("/register", json={"redirect_uris": ["https://a.com/cb"]})
+            await client.post("/register", json={"redirect_uris": ["https://b.com/cb"]})
+            r = await client.post("/register", json={"redirect_uris": ["https://c.com/cb"]})
+        assert r.status_code == 503
+
 
 # ---------------------------------------------------------------------------
 # /authorize endpoint
@@ -860,6 +914,30 @@ class TestAuthorizeEndpoint:
         loc = r.headers["location"]
         code = dict(p.split("=", 1) for p in loc.split("?", 1)[1].split("&"))["code"]
         assert mcp_server._oauth_codes[code]["code_challenge"] == challenge
+
+    async def test_lockout_after_max_failures(self, client, registered_client):
+        url = f"/authorize?client_id={registered_client}&redirect_uri=https://claude.ai/oauth/callback"
+        with patch("mcp_server._get_ip", return_value="1.2.3.4"):
+            for _ in range(mcp_server._MAX_LOGIN_FAILURES):
+                await client.post(url, data={"password": "wrong"}, follow_redirects=False)
+            r = await client.post(url, data={"password": "wrong"}, follow_redirects=False)
+        assert r.status_code == 429
+
+    async def test_locked_ip_blocked_even_with_correct_password(self, client, registered_client):
+        url = f"/authorize?client_id={registered_client}&redirect_uri=https://claude.ai/oauth/callback"
+        with patch("mcp_server._get_ip", return_value="1.2.3.4"):
+            for _ in range(mcp_server._MAX_LOGIN_FAILURES):
+                await client.post(url, data={"password": "wrong"}, follow_redirects=False)
+            r = await client.post(url, data={"password": "test_coach_secret"}, follow_redirects=False)
+        assert r.status_code == 429
+
+    async def test_successful_login_clears_failure_count(self, client, registered_client):
+        url = f"/authorize?client_id={registered_client}&redirect_uri=https://claude.ai/oauth/callback"
+        with patch("mcp_server._get_ip", return_value="1.2.3.4"):
+            for _ in range(mcp_server._MAX_LOGIN_FAILURES - 1):
+                await client.post(url, data={"password": "wrong"}, follow_redirects=False)
+            await client.post(url, data={"password": "test_coach_secret"}, follow_redirects=False)
+        assert "1.2.3.4" not in mcp_server._authorize_failures
 
     async def test_no_state_param_omitted_from_redirect(self, client, registered_client):
         r = await client.post(
