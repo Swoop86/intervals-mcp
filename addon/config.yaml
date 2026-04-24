@@ -1,6 +1,6 @@
 name: "Intervals.icu MCP Server"
 description: "MCP server exposing Intervals.icu training data to AI assistants like Claude, with webhook receiver and automated coaching via Claude API."
-version: "2.5.4"
+version: "2.5.5"
 slug: "intervals_mcp"
 init: false
 arch:
@@ -23,6 +23,7 @@ options:
   coach_secret: ""
   claude_model: "claude-sonnet-4-6"
   ha_mobile_service: ""
+  token_expiry_days: 180
 schema:
   athlete_id: str
   api_key: password
@@ -32,6 +33,7 @@ schema:
   coach_secret: password
   claude_model: "list(claude-sonnet-4-6|claude-opus-4-7|claude-opus-4-6|claude-haiku-4-5)?"
   ha_mobile_service: str?
+  token_expiry_days: int?
 map:
   - config:rw
 hassio_api: true

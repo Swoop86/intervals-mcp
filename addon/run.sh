@@ -9,6 +9,7 @@ ANTHROPIC_API_KEY=$(bashio::config 'anthropic_api_key')
 COACH_SECRET=$(bashio::config 'coach_secret')
 CLAUDE_MODEL=$(bashio::config 'claude_model')
 HA_MOBILE_SERVICE=$(bashio::config 'ha_mobile_service')
+TOKEN_EXPIRY_DAYS=$(bashio::config 'token_expiry_days')
 
 # Fail fast on missing required config
 if [ -z "$ATHLETE_ID" ] || [ -z "$API_KEY" ]; then
@@ -25,6 +26,7 @@ export ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
 export COACH_SECRET="$COACH_SECRET"
 export CLAUDE_MODEL="$CLAUDE_MODEL"
 export HA_MOBILE_SERVICE="$HA_MOBILE_SERVICE"
+export TOKEN_EXPIRY_DAYS="$TOKEN_EXPIRY_DAYS"
 export HA_TOKEN="${SUPERVISOR_TOKEN}"
 
 # Security warnings

@@ -30,6 +30,7 @@ Connects your [intervals.icu](https://intervals.icu) training data to Claude AI 
 | `port` | No | Port (default: 8765) |
 | `anthropic_api_key` | No | Needed for the `/coach` HTTP endpoint |
 | `coach_secret` | No | Password for the built-in OAuth login form — gates access to `/mcp` |
+| `token_expiry_days` | No | How long OAuth tokens stay valid in days (default: 180). POST `/revoke` with `X-Coach-Token` to invalidate all tokens immediately. |
 | `claude_model` | No | Model for `/coach` (default: claude-sonnet-4-6) |
 | `webhook_secret` | No | Must match the secret set in intervals.icu webhook settings |
 | `ha_mobile_service` | No | HA notify service for push notifications (e.g. `notify.mobile_app_my_phone`) |

@@ -51,6 +51,7 @@ The addon has a built-in OAuth 2.1 authorization server — no external auth pro
 | `api_key` | Yes | intervals.icu API key (Settings → API) |
 | `port` | No | Port to listen on (default: 8765) |
 | `coach_secret` | No | Password that gates the OAuth login form (protects `/mcp`) |
+| `token_expiry_days` | No | How long OAuth tokens stay valid in days (default: 180). POST `/revoke` with `X-Coach-Token` to invalidate all tokens immediately. |
 | `anthropic_api_key` | No | Anthropic API key — required for the `/coach` HTTP endpoint |
 | `claude_model` | No | Claude model for `/coach` (default: claude-sonnet-4-6) |
 | `webhook_secret` | No | Secret configured in intervals.icu webhook settings |

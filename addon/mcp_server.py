@@ -477,7 +477,7 @@ _oauth_tokens: dict[str, dict] = {}      # token → {client_id, expires_at}
 _authorize_failures: dict[str, dict] = {} # ip → {count, locked_until}
 _oauth_lock = asyncio.Lock()
 
-_TOKEN_EXPIRY       = 3600  # seconds
+_TOKEN_EXPIRY       = _safe_int(os.environ.get("TOKEN_EXPIRY_DAYS"), 180) * 86400
 _CODE_EXPIRY        = 600   # seconds
 _MAX_LOGIN_FAILURES = 5
 _LOCKOUT_SECONDS    = 3600  # 1 hour
@@ -751,6 +751,18 @@ async def handle_token(request: Request) -> Response:
     })
 
 
+async def handle_revoke(request: Request) -> Response:
+    """Revoke all active OAuth tokens. Requires X-Coach-Token header."""
+    if not _check_header_token(request, "X-Coach-Token", COACH_SECRET):
+        log.warning("Unauthorized /revoke from %s", _get_ip(request))
+        return PlainTextResponse("Unauthorized", status_code=401)
+    async with _oauth_lock:
+        count = len(_oauth_tokens)
+        _oauth_tokens.clear()
+    log.warning("All OAuth tokens revoked (%d tokens cleared)", count)
+    return JSONResponse({"revoked": count})
+
+
 # ---------------------------------------------------------------------------
 # MCP rate limit + OAuth token middleware — applied only to /mcp path
 # ---------------------------------------------------------------------------
@@ -975,6 +987,7 @@ async def handle_health(request: Request) -> Response:
         "time": datetime.now(timezone.utc).isoformat(),
         "auth": {
             "mcp_oauth": True,
+            "token_expiry_days": _TOKEN_EXPIRY // 86400,
             "coach": bool(COACH_SECRET),
             "webhook": bool(WEBHOOK_SECRET),
         },
@@ -1019,6 +1032,7 @@ app = Starlette(
         Route("/register", handle_register, methods=["POST"]),
         Route("/authorize", handle_authorize, methods=["GET", "POST"]),
         Route("/token", handle_token, methods=["POST"]),
+        Route("/revoke", handle_revoke, methods=["POST"]),
         Route("/.well-known/oauth-authorization-server", handle_oauth_server_metadata, methods=["GET"]),
         Route("/.well-known/oauth-protected-resource", handle_oauth_resource_metadata, methods=["GET"]),
         # Mount FastMCP last — it handles /mcp
@@ -1030,7 +1044,7 @@ app = Starlette(
 
 
 if __name__ == "__main__":
-    log.info("MCP endpoint:     http://0.0.0.0:%d/mcp  (OAuth: %s)", PORT, "yes" if COACH_SECRET else "NO — set coach_secret!")
+    log.info("MCP endpoint:     http://0.0.0.0:%d/mcp  (OAuth: %s, token expiry: %d days)", PORT, "yes" if COACH_SECRET else "NO — set coach_secret!", _TOKEN_EXPIRY // 86400)
     log.info("OAuth endpoints:  /authorize /token /register /.well-known/oauth-authorization-server")
     log.info("Webhook receiver: http://0.0.0.0:%d/webhook  (secret: %s)", PORT, "yes" if WEBHOOK_SECRET else "NO")
     log.info("Coach endpoint:   http://0.0.0.0:%d/coach  (auth: %s)", PORT, "yes" if COACH_SECRET else "NO")

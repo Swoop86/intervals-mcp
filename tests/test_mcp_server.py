@@ -1109,6 +1109,39 @@ class TestTokenEndpoint:
 
 
 # ---------------------------------------------------------------------------
+# /revoke endpoint
+# ---------------------------------------------------------------------------
+
+class TestRevokeEndpoint:
+    async def test_missing_auth_returns_401(self, client):
+        r = await client.post("/revoke")
+        assert r.status_code == 401
+
+    async def test_wrong_auth_returns_401(self, client):
+        r = await client.post("/revoke", headers={"X-Coach-Token": "WRONG"})
+        assert r.status_code == 401
+
+    async def test_clears_all_tokens(self, client, valid_token):
+        assert valid_token in mcp_server._oauth_tokens
+        r = await client.post("/revoke", headers={"X-Coach-Token": "test_coach_secret"})
+        assert r.status_code == 200
+        assert r.json()["revoked"] == 1
+        assert valid_token not in mcp_server._oauth_tokens
+
+    async def test_returns_count_of_revoked_tokens(self, client):
+        mcp_server._oauth_tokens["tok1"] = {"client_id": "c1", "expires_at": _ts() + 3600}
+        mcp_server._oauth_tokens["tok2"] = {"client_id": "c2", "expires_at": _ts() + 3600}
+        r = await client.post("/revoke", headers={"X-Coach-Token": "test_coach_secret"})
+        assert r.json()["revoked"] == 2
+        assert len(mcp_server._oauth_tokens) == 0
+
+    async def test_empty_store_returns_zero(self, client):
+        r = await client.post("/revoke", headers={"X-Coach-Token": "test_coach_secret"})
+        assert r.status_code == 200
+        assert r.json()["revoked"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Full OAuth flow integration test
 # ---------------------------------------------------------------------------
 
