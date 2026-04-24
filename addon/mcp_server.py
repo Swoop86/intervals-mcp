@@ -726,6 +726,11 @@ async def handle_token(request: Request) -> Response:
                 {"error": "invalid_grant", "error_description": "code_verifier required"},
                 status_code=400,
             )
+        if code_data.get("code_challenge_method", "S256") != "S256":
+            return JSONResponse(
+                {"error": "invalid_grant", "error_description": "only S256 supported"},
+                status_code=400,
+            )
         if not _pkce_verify(code_verifier, code_data["code_challenge"]):
             return JSONResponse(
                 {"error": "invalid_grant", "error_description": "PKCE mismatch"},

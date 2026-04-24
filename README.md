@@ -6,6 +6,7 @@ A Home Assistant addon that connects your [intervals.icu](https://intervals.icu)
 
 - **MCP endpoint** — expose your training data to Claude.ai or Claude Desktop as MCP tools
 - **`review_training`** — Claude fetches 28 days of activities, 14 days of wellness, and your fitness metrics on demand
+- **`create_workout`** — Claude can add a new planned workout to your calendar
 - **`update_workout`** — Claude can reschedule or modify planned workouts directly in your calendar
 - **`delete_workout`** — Claude can remove planned workouts when rest is needed
 - **Webhook receiver** — receive real-time events from intervals.icu (activity uploaded, analyzed, calendar updated) and push them to Home Assistant as events and mobile notifications
@@ -40,7 +41,7 @@ Expose the addon via [Cloudflare Tunnel](https://developers.cloudflare.com/cloud
 https://your-tunnel-domain.com/mcp
 ```
 
-Set `cf_team_domain` and `cf_access_aud` in the addon config to protect the endpoint with Cloudflare Access JWT validation.
+The addon has a built-in OAuth 2.1 authorization server — no external auth proxy needed. When you add the URL in Claude.ai, it will redirect you to a login page at `/authorize`. Enter your `coach_secret` there, and Claude.ai receives a bearer token it uses for all subsequent `/mcp` requests. After 1 hour the token expires and you'll be prompted to log in again.
 
 ## Configuration
 
@@ -49,13 +50,11 @@ Set `cf_team_domain` and `cf_access_aud` in the addon config to protect the endp
 | `athlete_id` | Yes | Your intervals.icu athlete ID (found in the URL when logged in) |
 | `api_key` | Yes | intervals.icu API key (Settings → API) |
 | `port` | No | Port to listen on (default: 8765) |
+| `coach_secret` | No | Password that gates the OAuth login form (protects `/mcp`) |
 | `anthropic_api_key` | No | Anthropic API key — required for the `/coach` HTTP endpoint |
-| `coach_secret` | No | Token to protect the `/coach` endpoint |
 | `claude_model` | No | Claude model for `/coach` (default: claude-sonnet-4-6) |
 | `webhook_secret` | No | Secret configured in intervals.icu webhook settings |
 | `ha_mobile_service` | No | HA notify service for mobile push (e.g. `notify.mobile_app_my_phone`) |
-| `cf_team_domain` | No | Cloudflare Access team domain (e.g. `yourteam.cloudflareaccess.com`) |
-| `cf_access_aud` | No | Cloudflare Access application AUD for JWT validation |
 
 ## Development
 

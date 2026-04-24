@@ -6,6 +6,7 @@ Connects your [intervals.icu](https://intervals.icu) training data to Claude AI 
 
 - **MCP tools for Claude.ai / Claude Desktop**
   - `review_training` — fetch 28 days of activities, 14 days of HRV/sleep/wellness, and CTL/ATL/TSB so Claude can coach you
+  - `create_workout` — add a new planned workout to your calendar
   - `update_workout` — modify a planned workout directly in your calendar
   - `delete_workout` — remove a planned workout
 
@@ -28,12 +29,10 @@ Connects your [intervals.icu](https://intervals.icu) training data to Claude AI 
 | `api_key` | Yes | intervals.icu API key |
 | `port` | No | Port (default: 8765) |
 | `anthropic_api_key` | No | Needed for the `/coach` HTTP endpoint |
-| `coach_secret` | No | Protects the `/coach` endpoint |
+| `coach_secret` | No | Password for the built-in OAuth login form — gates access to `/mcp` |
 | `claude_model` | No | Model for `/coach` (default: claude-sonnet-4-6) |
 | `webhook_secret` | No | Must match the secret set in intervals.icu webhook settings |
 | `ha_mobile_service` | No | HA notify service for push notifications (e.g. `notify.mobile_app_my_phone`) |
-| `cf_team_domain` | No | Cloudflare Access team domain — protects `/mcp` with JWT validation |
-| `cf_access_aud` | No | Cloudflare Access application AUD |
 
 ### 3. Connect to Claude.ai
 
@@ -42,6 +41,8 @@ Expose the addon externally (e.g. via Cloudflare Tunnel) and add it as a remote 
 ```
 https://your-tunnel-domain.com/mcp
 ```
+
+Claude.ai will redirect you to `/authorize` — a login page hosted by the addon itself. Enter your `coach_secret`, and Claude.ai receives a token it uses for all `/mcp` requests. Tokens expire after 1 hour.
 
 Then ask Claude: *"Review my training"* — it will call `review_training` and give you a coaching response using your real data.
 
