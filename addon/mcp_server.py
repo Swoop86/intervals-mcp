@@ -501,95 +501,50 @@ if not READ_ONLY:
         moving_time: int | None = None,
         distance_km: float | None = None,
         target_tss: float | None = None,
-        workout_doc: dict | None = None,
     ) -> dict:
         """Create a planned workout on the calendar. Syncs to Garmin if connected.
 
-        DESCRIPTION FORMATTING
-        Use \\n to separate lines so the workout reads clearly in the app, e.g.:
-            "Easy aerobic run\\n\\nWarmup: 10 min easy (HR <140)\\nMain: 30 min Z2 (HR 140-155)\\nCooldown: 5 min easy"
+        HOW GARMIN NATIVE WORKOUTS WORK
+        intervals.icu parses the description text and generates a structured workout
+        that syncs step-by-step to the Garmin watch (like Garmin Coach) — with HR
+        alerts, pace zones, and rep countdowns per step. The description IS the
+        structured workout. Use the syntax below.
 
-        GARMIN NATIVE WORKOUT (workout_doc)
-        Always provide workout_doc for any session with specific targets (HR zones, pace
-        zones, intervals). This creates a step-by-step workout on the Garmin watch —
-        identical to Garmin Coach plans — with alerts, zone guidance, and rep countdowns.
-        Without workout_doc the workout appears as a text note only; with it the watch
-        guides the athlete through every step.
+        DESCRIPTION SYNTAX — always use this structured format:
 
-        workout_doc for running — heart rate zones (most common for easy/aerobic runs):
-            {
-                "description": "Easy aerobic run",
-                "duration": 2700,
-                "lthr": 165,
-                "target": "HEART_RATE",
-                "steps": [
-                    {"reps": 1, "steps": [
-                        {"duration": 600,  "name": "Warmup",   "heart_rate": {"start": 55, "end": 65, "units": "%lthr"}},
-                    ]},
-                    {"reps": 1, "steps": [
-                        {"duration": 1500, "name": "Main set", "heart_rate": {"start": 65, "end": 75, "units": "%lthr"}},
-                    ]},
-                    {"reps": 1, "steps": [
-                        {"duration": 600,  "name": "Cooldown", "heart_rate": {"start": 55, "end": 65, "units": "%lthr"}},
-                    ]}
-                ]
-            }
+        Running — heart rate zones (easy/aerobic runs):
+            Warmup\\n- 10m 60-70% LTHR\\n\\nMain Set\\n- 30m 70-80% LTHR\\n\\nCooldown\\n- 5m 55-65% LTHR
 
-        workout_doc for running — intervals with pace targets:
-            {
-                "description": "5x3min threshold",
-                "duration": 3300,
-                "threshold_pace": 2.778,
-                "pace_units": "MINS_KM",
-                "target": "PACE",
-                "steps": [
-                    {"reps": 1, "steps": [
-                        {"duration": 600,  "name": "Warmup",   "pace": {"start": 75, "end": 85, "units": "%threshold"}}
-                    ]},
-                    {"reps": 5, "steps": [
-                        {"duration": 180,  "name": "Interval", "pace": {"start": 95, "end": 100, "units": "%threshold"}},
-                        {"duration": 90,   "name": "Recovery", "pace": {"start": 60, "end": 70, "units": "%threshold"}}
-                    ]},
-                    {"reps": 1, "steps": [
-                        {"duration": 600,  "name": "Cooldown", "pace": {"start": 75, "end": 85, "units": "%threshold"}}
-                    ]}
-                ]
-            }
+        Running — intervals with pace targets:
+            Warmup\\n- 10m 75-80% Pace\\n\\nMain Set 5x\\n- 3m 95-100% Pace\\n- 2m 65% Pace\\n\\nCooldown\\n- 10m 75% Pace
 
-        workout_doc for cycling — power targets:
-            {
-                "description": "5x3min threshold",
-                "duration": 3600,
-                "ftp": 280,
-                "target": "POWER",
-                "steps": [
-                    {"reps": 1, "steps": [
-                        {"duration": 600,  "name": "Warmup",   "power": {"start": 55, "end": 65, "units": "%ftp"}}
-                    ]},
-                    {"reps": 5, "steps": [
-                        {"duration": 180,  "name": "Interval", "power": {"start": 90, "end": 95, "units": "%ftp"}},
-                        {"duration": 90,   "name": "Recovery", "power": {"start": 50, "end": 55, "units": "%ftp"}}
-                    ]},
-                    {"reps": 1, "steps": [
-                        {"duration": 600,  "name": "Cooldown", "power": {"start": 55, "end": 65, "units": "%ftp"}}
-                    ]}
-                ]
-            }
+        Running — distance-based:
+            Warmup\\n- 1km 65-70% LTHR\\n\\nMain Set 3x\\n- 1km 90-95% Pace\\n- 400mtr recovery\\n\\nCooldown\\n- 1km 60-65% LTHR
 
-        Use %lthr units when LTHR is available from get_athlete. Use bpm units as fallback:
-            "heart_rate": {"start": 125, "end": 145, "units": "bpm"}
+        Cycling — power:
+            Warmup\\n- 10m ramp 55-75%\\n\\nMain Set 5x\\n- 3m 90-95%\\n- 2m 50-55%\\n\\nCooldown\\n- 10m ramp 75-55%
+
+        HR zone syntax:  Z1 HR / Z2 HR / Z3 HR / Z2-Z3 HR  OR  70% LTHR / 70-80% LTHR / 145bpm
+        Pace syntax:     Z2 Pace / 75% Pace / 5:00/km Pace / 5:00-5:30/km Pace
+        Power syntax:    Z2 / 75% / 220w / ramp 55-75%  (% = %FTP)
+        Duration syntax: 10m / 1h / 30s / 1h30m / 500mtr / 2km  (use mtr not m for metres)
+        Repeats:         Put Nx on its own line before the steps (blank line before and after)
+        Sections:        Warmup / Main Set / Cooldown on their own lines
+
+        Use LTHR% when LTHR is available from get_athlete; fall back to Z1-Z3 HR zones
+        or absolute BPM. Use %FTP for cycling when FTP is available.
 
         Args:
             date:         ISO date YYYY-MM-DD (time component added automatically)
             name:         Workout name
-            description:  Workout description — use \\n for line breaks
+            description:  Structured workout using the syntax above — intervals.icu
+                          parses this and sends step-by-step targets to the Garmin watch
             sport_type:   Run, Ride, Swim, etc. (default Run)
             category:     WORKOUT (default), RACE, NOTES, TARGET,
                           FITNESS_DAYS, SET_FITNESS, or SET_EFTP
-            moving_time:  Estimated duration in seconds
+            moving_time:  Estimated duration in seconds (sum of all step durations)
             distance_km:  Target distance in kilometres (e.g. 10.0 for a 10 km run)
             target_tss:   Target Training Stress Score
-            workout_doc:  Structured workout for Garmin-native step-by-step guidance
         """
         payload = {
             "start_date_local": _normalise_date(date),
@@ -604,8 +559,6 @@ if not READ_ONLY:
             payload["distance"] = round(distance_km * 1000)
         if target_tss is not None:
             payload["icu_training_load"] = target_tss
-        if workout_doc is not None:
-            payload["workout_doc"] = workout_doc
         return await icu_post(f"athlete/{ATHLETE_ID}/events", payload)
 
 
@@ -745,94 +698,52 @@ if not READ_ONLY:
         Prefer this over calling create_workout repeatedly. Workouts sync to Garmin Connect
         automatically (up to 7 days ahead) if the athlete has connected Garmin in settings.
 
-        DESCRIPTION FORMATTING: Use \\n between sections so the workout reads clearly in
-        the intervals.icu app. E.g. "Warmup: 10 min easy\\nMain: 3x10 min threshold\\nCooldown: 5 min easy"
-
-        GARMIN NATIVE WORKOUTS: Always include workout_doc for sessions with specific
-        targets. This creates a step-by-step guided workout on the Garmin watch (like
-        Garmin Coach) with HR alerts, pace guidance, and rep countdowns per step.
+        HOW GARMIN NATIVE WORKOUTS WORK
+        intervals.icu parses the description text and generates a structured workout
+        that syncs step-by-step to the Garmin watch — with HR alerts, pace zones, and
+        rep countdowns per step. The description IS the structured workout.
 
         Each dict in the list supports these fields:
-            start_date_local  (required) ISO date YYYY-MM-DD (time component added automatically)
+            start_date_local  (required) ISO date YYYY-MM-DD (time added automatically)
             name              (required) Workout name
             type              (required) Sport: Run, Ride, Swim, VirtualRide, etc.
-            description       (required) Free-text workout description — use \\n for line breaks
+            description       (required) Structured workout using the syntax below
             category          WORKOUT (default), RACE, NOTES, TARGET,
                               FITNESS_DAYS, SET_FITNESS, SET_EFTP
-            moving_time       Estimated duration in seconds
+            moving_time       Estimated duration in seconds (sum of all step durations)
             distance_km       Target distance in kilometres — converted to metres automatically
             icu_training_load Target TSS
-            workout_doc       Structured workout for Garmin-native step-by-step guidance
 
-        workout_doc for running — heart rate zones:
-            {
-                "description": "Easy aerobic run",
-                "duration": 2700,
-                "lthr": 165,
-                "target": "HEART_RATE",
-                "steps": [
-                    {"reps": 1, "steps": [
-                        {"duration": 600,  "name": "Warmup",   "heart_rate": {"start": 55, "end": 65, "units": "%lthr"}}
-                    ]},
-                    {"reps": 1, "steps": [
-                        {"duration": 1500, "name": "Main set", "heart_rate": {"start": 65, "end": 75, "units": "%lthr"}}
-                    ]},
-                    {"reps": 1, "steps": [
-                        {"duration": 600,  "name": "Cooldown", "heart_rate": {"start": 55, "end": 65, "units": "%lthr"}}
-                    ]}
-                ]
-            }
+        DESCRIPTION SYNTAX — use this for every session with specific targets:
 
-        workout_doc for running — pace intervals:
-            {
-                "description": "5x3min threshold",
-                "duration": 3300,
-                "threshold_pace": 2.778,
-                "pace_units": "MINS_KM",
-                "target": "PACE",
-                "steps": [
-                    {"reps": 1, "steps": [
-                        {"duration": 600,  "name": "Warmup",   "pace": {"start": 75, "end": 85, "units": "%threshold"}}
-                    ]},
-                    {"reps": 5, "steps": [
-                        {"duration": 180,  "name": "Interval", "pace": {"start": 95, "end": 100, "units": "%threshold"}},
-                        {"duration": 90,   "name": "Recovery", "pace": {"start": 60, "end": 70,  "units": "%threshold"}}
-                    ]},
-                    {"reps": 1, "steps": [
-                        {"duration": 600,  "name": "Cooldown", "pace": {"start": 75, "end": 85, "units": "%threshold"}}
-                    ]}
-                ]
-            }
+        Running — heart rate zones:
+            "Warmup\\n- 10m 60-70% LTHR\\n\\nMain Set\\n- 30m 70-80% LTHR\\n\\nCooldown\\n- 5m 55-65% LTHR"
 
-        workout_doc for cycling — power:
-            {
-                "description": "5x3min threshold",
-                "duration": 3600,
-                "ftp": 280,
-                "target": "POWER",
-                "steps": [
-                    {"reps": 1, "steps": [
-                        {"duration": 600,  "name": "Warmup",   "power": {"start": 55, "end": 65, "units": "%ftp"}}
-                    ]},
-                    {"reps": 5, "steps": [
-                        {"duration": 180,  "name": "Interval", "power": {"start": 90, "end": 95, "units": "%ftp"}},
-                        {"duration": 90,   "name": "Recovery", "power": {"start": 50, "end": 55, "units": "%ftp"}}
-                    ]},
-                    {"reps": 1, "steps": [
-                        {"duration": 600,  "name": "Cooldown", "power": {"start": 55, "end": 65, "units": "%ftp"}}
-                    ]}
-                ]
-            }
+        Running — intervals with pace:
+            "Warmup\\n- 10m 75-80% Pace\\n\\nMain Set 5x\\n- 3m 95-100% Pace\\n- 2m 65% Pace\\n\\nCooldown\\n- 10m 75% Pace"
 
-        Use %lthr / %ftp when those values are available from get_athlete.
-        Fallback: "heart_rate": {"start": 125, "end": 145, "units": "bpm"}
+        Running — distance-based steps:
+            "Warmup\\n- 1km 65-70% LTHR\\n\\nMain Set 3x\\n- 1km 90-95% Pace\\n- 400mtr recovery\\n\\nCooldown\\n- 1km 60-65% LTHR"
+
+        Cycling — power:
+            "Warmup\\n- 10m ramp 55-75%\\n\\nMain Set 5x\\n- 3m 90-95%\\n- 2m 50-55%\\n\\nCooldown\\n- 10m ramp 75-55%"
+
+        HR syntax:    Z2 HR / Z2-Z3 HR / 70-80% LTHR / 145bpm
+        Pace syntax:  Z2 Pace / 75% Pace / 5:00/km Pace
+        Power syntax: Z2 / 75% / ramp 55-75%  (% = %FTP)
+        Duration:     10m / 1h30m / 500mtr / 2km  (mtr not m for metres)
+        Repeats:      Nx on its own line before the steps block (blank lines around it)
+        Sections:     Warmup / Main Set / Cooldown as their own lines
+
+        Use LTHR% when LTHR is available from get_athlete; fall back to Z1-Z3 HR zones.
+        Use %FTP for cycling when FTP is available.
 
         Args:
             workouts: List of workout objects to create on the calendar.
         """
         _PLAN_FIELDS = frozenset({
             "start_date_local", "name", "type", "category", "description",
-            "moving_time", "distance", "icu_training_load", "workout_doc",
+            "moving_time", "distance", "icu_training_load",
         })
         safe = []
         for w in workouts:

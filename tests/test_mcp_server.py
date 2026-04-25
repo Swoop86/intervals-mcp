@@ -1371,23 +1371,20 @@ class TestCreatePlanTool:
             assert "T" in s["start_date_local"]
         assert result == post_response
 
-    async def test_passes_workout_doc(self):
+    async def test_workout_doc_stripped_from_payload(self):
+        """workout_doc is server-generated from description text; sending it is ignored."""
         import mcp_server
 
-        workout_doc = {
-            "description": "test", "duration": 3600, "ftp": 280,
-            "target": "POWER",
-            "steps": [{"reps": 1, "steps": [{"duration": 3600, "power": {"start": 65, "end": 75, "units": "%ftp"}}]}],
-        }
         workouts = [{"start_date_local": "2026-04-25", "name": "Ride", "type": "Ride",
-                     "description": "Aerobic", "workout_doc": workout_doc}]
+                     "description": "Warmup\n- 10m ramp 55-75%\n\nMain Set\n- 30m 75%",
+                     "workout_doc": {"target": "POWER", "steps": []}}]
 
         with patch.object(mcp_server, "icu_post", new=AsyncMock(return_value=[{"id": 1}])) as mock_post:
             from mcp_server import create_plan
             await create_plan(workouts)
 
         sent_payload = mock_post.call_args[0][1]
-        assert sent_payload[0]["workout_doc"] == workout_doc
+        assert "workout_doc" not in sent_payload[0]
 
     async def test_distance_km_converted_to_metres(self):
         import mcp_server
