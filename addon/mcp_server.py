@@ -632,25 +632,64 @@ if not READ_ONLY:
         alerts, pace zones, and rep countdowns per step. The description IS the
         structured workout. Use the syntax below.
 
-        DESCRIPTION SYNTAX — always use this structured format:
+        DESCRIPTION SYNTAX — always use this structured format.
+        intervals.icu parses it and creates step-by-step Garmin guidance.
 
-        Running — heart rate zones (easy/aerobic runs):
-            Warmup\\n- 10m 60-70% LTHR\\n\\nMain Set\\n- 30m 70-80% LTHR\\n\\nCooldown\\n- 5m 55-65% LTHR
+        RUNNING WORKOUT TYPES AND THEIR TARGETS
+        ─────────────────────────────────────────
+        Easy / Recovery run  (Z1-Z2, RPE 2-3, conversational):
+            Warmup\\n- 5m Z1 HR\\n\\nMain Set\\n- 40m Z2 HR\\n\\nCooldown\\n- 5m Z1 HR
+            Or with LTHR%: Main Set\\n- 45m 65-75% LTHR
 
-        Running — intervals with pace targets:
-            Warmup\\n- 10m 75-80% Pace\\n\\nMain Set 5x\\n- 3m 95-100% Pace\\n- 2m 65% Pace\\n\\nCooldown\\n- 10m 75% Pace
+        Long run  (aerobic, same zones as easy but longer):
+            Main Set\\n- 90m 65-75% LTHR
 
-        Running — distance-based:
-            Warmup\\n- 1km 65-70% LTHR\\n\\nMain Set 3x\\n- 1km 90-95% Pace\\n- 400mtr recovery\\n\\nCooldown\\n- 1km 60-65% LTHR
+        Aerobic with strides  (easy run + short accelerations at the end):
+            Main Set\\n- 35m Z2 HR\\n\\nStrides 4x\\n- 20s 110% Pace\\n- 90s Z1 HR
 
-        Cycling — power:
-            Warmup\\n- 10m ramp 55-75%\\n\\nMain Set 5x\\n- 3m 90-95%\\n- 2m 50-55%\\n\\nCooldown\\n- 10m ramp 75-55%
+        Tempo run  (sustained "comfortably hard", 20-40min, ~85-92% LTHR, RPE 6-7):
+            Warmup\\n- 15m 70-75% LTHR\\n\\nMain Set\\n- 25m 85-92% LTHR\\n\\nCooldown\\n- 10m 70% LTHR
+            Or with pace: Main Set\\n- 25m 85-90% Pace
 
-        HR zone syntax:  Z1 HR / Z2 HR / Z3 HR / Z2-Z3 HR  OR  70% LTHR / 70-80% LTHR / 145bpm
-        Pace syntax:     Z2 Pace / 75% Pace / 5:00/km Pace / 5:00-5:30/km Pace
-        Power syntax:    Z2 / 75% / 220w / ramp 55-75%  (% = %FTP)
-        Duration syntax: 10m / 1h / 30s / 1h30m / 500mtr / 2km  (use mtr not m for metres)
-        Repeats:         Put Nx on its own line before the steps (blank line before and after)
+        Threshold / Cruise intervals  (at threshold pace, short recovery, RPE 7-8):
+            Warmup\\n- 15m Z2 Pace\\n\\nMain Set 4x\\n- 8m 90-95% Pace\\n- 90s Z1 HR\\n\\nCooldown\\n- 10m Z2 Pace
+
+        VO2max intervals  (short, hard, near-maximal, RPE 9):
+            Warmup\\n- 15m Z2 Pace\\n\\nMain Set 6x\\n- 3m 105-110% Pace\\n- 3m 60% Pace\\n\\nCooldown\\n- 10m Z2 Pace
+
+        Marathon-pace run  (goal race effort embedded in long run):
+            Warmup\\n- 20m 70% LTHR\\n\\nAerobic\\n- 40m 75-80% LTHR\\n\\nMarathon Pace\\n- 20m 80-85% Pace\\n\\nCooldown\\n- 10m 70% LTHR
+
+        Hill repeats  (strength/power, by time):
+            Warmup\\n- 15m Z2 HR\\n\\nMain Set 8x\\n- 60s Z4-Z5 HR\\n- 90s Z1 HR walk\\n\\nCooldown\\n- 10m Z2 HR
+
+        TARGET PERCENTAGE GUIDE
+        ─────────────────────────────────────────
+        % Pace (= % of threshold pace, 100% = threshold):
+          Recovery   60-70% | Easy  70-80% | Tempo  85-90% | Threshold  95-100%
+          VO2max 105-110% | Speed/rep 115-120%
+
+        % LTHR (= % of lactate threshold HR):
+          Recovery  <70% | Easy  70-80% | Tempo  82-90% | Threshold  90-95%
+          VO2max  >95%
+
+        HR zones: Z1 HR / Z2 HR / Z3 HR / Z4 HR / Z5 HR  (or Z2-Z3 HR for a range)
+
+        METHODOLOGY NOTES
+        ─────────────────────────────────────────
+        Polarized: use Easy OR VO2max intervals — skip Tempo/Threshold blocks
+        Maffetone: only Easy at <MAF HR (180-age), no intensity until base is solid
+        Norwegian:  two Threshold/Cruise interval sessions/week, everything else Easy
+        Pyramidal:  Easy + Tempo + limited VO2max (traditional mix)
+        Jack Daniels: use % Pace targets from VDOT (E=70%, M=78%, T=88%, I=98%, R=110%)
+
+        SYNTAX REFERENCE
+        ─────────────────────────────────────────
+        Pace syntax:     Z2 Pace / 75% Pace / 5:00/km Pace / 4:45-5:00/km Pace
+        HR syntax:       Z2 HR / 70-80% LTHR / 140bpm
+        Power syntax:    Z2 / 75% / 220w / ramp 55-75%  (% = %FTP, cycling)
+        Duration syntax: 10m / 1h / 30s / 1h30m / 500mtr / 2km  (mtr not m for metres)
+        Repeats:         Nx on its own line before the steps (blank lines around block)
         Sections:        Warmup / Main Set / Cooldown on their own lines
 
         BEFORE WRITING TARGETS — call these first if not already in context:
@@ -875,34 +914,38 @@ if not READ_ONLY:
             distance_km       Target distance in kilometres — converted to metres automatically
             icu_training_load Target TSS
 
-        DESCRIPTION SYNTAX — use this for every session with specific targets:
+        RUNNING WORKOUT TYPES AND DESCRIPTION SYNTAX
+        ─────────��───────────────────────────────
+        Easy/Recovery:   "Warmup\\n- 5m Z1 HR\\n\\nMain Set\\n- 40m Z2 HR\\n\\nCooldown\\n- 5m Z1 HR"
+        Long run:        "Main Set\\n- 90m 65-75% LTHR"
+        Strides:         "Main Set\\n- 35m Z2 HR\\n\\nStrides 4x\\n- 20s 110% Pace\\n- 90s Z1 HR"
+        Tempo run:       "Warmup\\n- 15m Z2 Pace\\n\\nMain Set\\n- 25m 85-90% Pace\\n\\nCooldown\\n- 10m Z2 Pace"
+        Threshold/Cruise:"Warmup\\n- 15m Z2 Pace\\n\\nMain Set 4x\\n- 8m 90-95% Pace\\n- 90s Z1 HR\\n\\nCooldown\\n- 10m Z2 Pace"
+        VO2max:          "Warmup\\n- 15m Z2 Pace\\n\\nMain Set 6x\\n- 3m 105-110% Pace\\n- 3m 60% Pace\\n\\nCooldown\\n- 10m Z2 Pace"
+        Hill repeats:    "Warmup\\n- 15m Z2 HR\\n\\nMain Set 8x\\n- 60s Z4-Z5 HR\\n- 90s Z1 HR walk\\n\\nCooldown\\n- 10m Z2 HR"
+        Marathon pace:   "Warmup\\n- 20m 70% LTHR\\n\\nAerobic\\n- 40m 75-80% LTHR\\n\\nMarathon Pace\\n- 20m 80-85% Pace\\n\\nCooldown\\n- 10m 70% LTHR"
 
-        Running — heart rate zones:
-            "Warmup\\n- 10m 60-70% LTHR\\n\\nMain Set\\n- 30m 70-80% LTHR\\n\\nCooldown\\n- 5m 55-65% LTHR"
+        % Pace guide (100% = threshold pace):
+          Recovery 60-70% | Easy 70-80% | Tempo 85-90% | Threshold 90-95% | VO2max 105-110%
 
-        Running — intervals with pace:
-            "Warmup\\n- 10m 75-80% Pace\\n\\nMain Set 5x\\n- 3m 95-100% Pace\\n- 2m 65% Pace\\n\\nCooldown\\n- 10m 75% Pace"
+        % LTHR guide:
+          Recovery <70% | Easy 70-80% | Tempo 82-90% | Threshold 90-95% | VO2max >95%
 
-        Running — distance-based steps:
-            "Warmup\\n- 1km 65-70% LTHR\\n\\nMain Set 3x\\n- 1km 90-95% Pace\\n- 400mtr recovery\\n\\nCooldown\\n- 1km 60-65% LTHR"
+        Methodology: Polarized → Easy or VO2max only, skip Tempo/Threshold
+                     Norwegian → Threshold intervals twice/week, everything else Easy
+                     Maffetone → Easy at <MAF HR (180-age) only
+                     Jack Daniels → use %Pace: E=70% M=78% T=88% I=98% R=110%
 
-        Cycling — power:
-            "Warmup\\n- 10m ramp 55-75%\\n\\nMain Set 5x\\n- 3m 90-95%\\n- 2m 50-55%\\n\\nCooldown\\n- 10m ramp 75-55%"
-
-        HR syntax:    Z2 HR / Z2-Z3 HR / 70-80% LTHR / 145bpm
-        Pace syntax:  Z2 Pace / 75% Pace / 5:00/km Pace
-        Power syntax: Z2 / 75% / ramp 55-75%  (% = %FTP)
+        HR syntax:    Z1-Z5 HR / 70-80% LTHR / 140bpm
+        Pace syntax:  Z2 Pace / 75% Pace / 5:00/km Pace / 4:45-5:00/km Pace
+        Power syntax: Z2 / 75% / ramp 55-75%  (% = %FTP, cycling)
         Duration:     10m / 1h30m / 500mtr / 2km  (mtr not m for metres)
         Repeats:      Nx on its own line before the steps block (blank lines around it)
         Sections:     Warmup / Main Set / Cooldown as their own lines
 
-        BEFORE WRITING TARGETS — call these first if not already in context:
-          get_athlete  → running_threshold_pace_min_per_km (synced from Garmin), LTHR, FTP
+        BEFORE WRITING TARGETS:
+          get_athlete  → running_threshold_pace_min_per_km (Garmin-synced), run_lthr_bpm
           get_profile  → fallback threshold_pace_min_per_km if get_athlete has none
-
-        Prefer running_threshold_pace_min_per_km from get_athlete (Garmin-synced) over
-        the profile value. Use LTHR% when LTHR is available; fall back to Z1-Z3 HR zones.
-        Use %FTP for cycling when FTP is available.
 
         Args:
             workouts: List of workout objects to create on the calendar.
