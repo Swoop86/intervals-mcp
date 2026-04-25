@@ -44,6 +44,12 @@ def _make_code_challenge(verifier: str) -> str:
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
 
 
+# Shared PKCE params used in authorize tests (PKCE S256 is now mandatory)
+_TEST_VERIFIER  = "test_pkce_verifier_abcdef1234567890abcdef"
+_TEST_CHALLENGE = _make_code_challenge(_TEST_VERIFIER)
+_PKCE_QS        = f"&code_challenge={_TEST_CHALLENGE}&code_challenge_method=S256"
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -94,6 +100,7 @@ def registered_client():
     mcp_server._oauth_clients[client_id] = {
         "redirect_uris": ["https://claude.ai/oauth/callback"],
         "client_name": "Test Client",
+        "registered_at": int(time.time()),
     }
     return client_id
 
@@ -855,11 +862,26 @@ class TestAuthorizeEndpoint:
         r = await client.get(
             f"/authorize?client_id={registered_client}"
             f"&redirect_uri=https://claude.ai/oauth/callback"
-            f"&response_type=code&state=abc",
+            f"&response_type=code&state=abc{_PKCE_QS}",
         )
         assert r.status_code == 200
         assert "text/html" in r.headers["content-type"]
         assert "password" in r.text.lower()
+
+    async def test_get_missing_pkce_returns_400(self, client, registered_client):
+        r = await client.get(
+            f"/authorize?client_id={registered_client}"
+            f"&redirect_uri=https://claude.ai/oauth/callback",
+        )
+        assert r.status_code == 400
+
+    async def test_get_wrong_pkce_method_returns_400(self, client, registered_client):
+        r = await client.get(
+            f"/authorize?client_id={registered_client}"
+            f"&redirect_uri=https://claude.ai/oauth/callback"
+            f"&code_challenge=abc&code_challenge_method=plain",
+        )
+        assert r.status_code == 400
 
     async def test_get_unregistered_redirect_uri_returns_400(self, client, registered_client):
         r = await client.get(
@@ -872,7 +894,7 @@ class TestAuthorizeEndpoint:
         r = await client.post(
             f"/authorize?client_id={registered_client}"
             f"&redirect_uri=https://claude.ai/oauth/callback"
-            f"&response_type=code&state=xyz",
+            f"&response_type=code&state=xyz{_PKCE_QS}",
             data={"password": "test_coach_secret"},
             follow_redirects=False,
         )
@@ -885,7 +907,7 @@ class TestAuthorizeEndpoint:
     async def test_post_wrong_password_returns_401_with_form(self, client, registered_client):
         r = await client.post(
             f"/authorize?client_id={registered_client}"
-            f"&redirect_uri=https://claude.ai/oauth/callback",
+            f"&redirect_uri=https://claude.ai/oauth/callback{_PKCE_QS}",
             data={"password": "wrong_password"},
             follow_redirects=False,
         )
@@ -896,7 +918,7 @@ class TestAuthorizeEndpoint:
         with patch.object(mcp_server, "COACH_SECRET", ""):
             r = await client.post(
                 f"/authorize?client_id={registered_client}"
-                f"&redirect_uri=https://claude.ai/oauth/callback",
+                f"&redirect_uri=https://claude.ai/oauth/callback{_PKCE_QS}",
                 data={"password": "anything"},
                 follow_redirects=False,
             )
@@ -905,7 +927,7 @@ class TestAuthorizeEndpoint:
     async def test_post_stores_code_in_state(self, client, registered_client):
         r = await client.post(
             f"/authorize?client_id={registered_client}"
-            f"&redirect_uri=https://claude.ai/oauth/callback",
+            f"&redirect_uri=https://claude.ai/oauth/callback{_PKCE_QS}",
             data={"password": "test_coach_secret"},
             follow_redirects=False,
         )
@@ -931,7 +953,7 @@ class TestAuthorizeEndpoint:
         assert mcp_server._oauth_codes[code]["code_challenge"] == challenge
 
     async def test_lockout_after_max_failures(self, client, registered_client):
-        url = f"/authorize?client_id={registered_client}&redirect_uri=https://claude.ai/oauth/callback"
+        url = f"/authorize?client_id={registered_client}&redirect_uri=https://claude.ai/oauth/callback{_PKCE_QS}"
         with patch("mcp_server._get_ip", return_value="1.2.3.4"):
             for _ in range(mcp_server._MAX_LOGIN_FAILURES):
                 await client.post(url, data={"password": "wrong"}, follow_redirects=False)
@@ -939,7 +961,7 @@ class TestAuthorizeEndpoint:
         assert r.status_code == 429
 
     async def test_locked_ip_blocked_even_with_correct_password(self, client, registered_client):
-        url = f"/authorize?client_id={registered_client}&redirect_uri=https://claude.ai/oauth/callback"
+        url = f"/authorize?client_id={registered_client}&redirect_uri=https://claude.ai/oauth/callback{_PKCE_QS}"
         with patch("mcp_server._get_ip", return_value="1.2.3.4"):
             for _ in range(mcp_server._MAX_LOGIN_FAILURES):
                 await client.post(url, data={"password": "wrong"}, follow_redirects=False)
@@ -947,7 +969,7 @@ class TestAuthorizeEndpoint:
         assert r.status_code == 429
 
     async def test_successful_login_clears_failure_count(self, client, registered_client):
-        url = f"/authorize?client_id={registered_client}&redirect_uri=https://claude.ai/oauth/callback"
+        url = f"/authorize?client_id={registered_client}&redirect_uri=https://claude.ai/oauth/callback{_PKCE_QS}"
         with patch("mcp_server._get_ip", return_value="1.2.3.4"):
             for _ in range(mcp_server._MAX_LOGIN_FAILURES - 1):
                 await client.post(url, data={"password": "wrong"}, follow_redirects=False)
@@ -957,7 +979,7 @@ class TestAuthorizeEndpoint:
     async def test_no_state_param_omitted_from_redirect(self, client, registered_client):
         r = await client.post(
             f"/authorize?client_id={registered_client}"
-            f"&redirect_uri=https://claude.ai/oauth/callback",
+            f"&redirect_uri=https://claude.ai/oauth/callback{_PKCE_QS}",
             data={"password": "test_coach_secret"},
             follow_redirects=False,
         )

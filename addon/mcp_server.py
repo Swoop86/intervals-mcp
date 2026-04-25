@@ -6,6 +6,7 @@ for the webhook, coach, and health routes, all in a single ASGI app.
 
 from __future__ import annotations
 
+import html
 import os
 import re
 import json
@@ -1439,6 +1440,7 @@ _CODE_EXPIRY        = 600   # seconds
 _MAX_LOGIN_FAILURES = 5
 _LOCKOUT_SECONDS    = 3600  # 1 hour
 _MAX_CLIENTS        = 10
+_CLIENT_TTL         = 86400  # evict stale client registrations after 24 h
 
 
 def _gen_token(n: int = 32) -> str:
@@ -1552,6 +1554,10 @@ async def handle_oauth_resource_metadata(request: Request) -> Response:
 
 
 async def handle_register(request: Request) -> Response:
+    ip = _get_ip(request)
+    if not _check_rate_limit(ip):
+        return JSONResponse({"error": "too_many_requests"}, status_code=429)
+
     try:
         body = await request.json()
     except Exception:
@@ -1563,11 +1569,19 @@ async def handle_register(request: Request) -> Response:
 
     client_id = _gen_token(16)
     async with _oauth_lock:
+        # Evict stale registrations before enforcing the cap
+        if len(_oauth_clients) >= _MAX_CLIENTS:
+            now = _ts()
+            stale = [cid for cid, c in _oauth_clients.items()
+                     if now - c.get("registered_at", 0) > _CLIENT_TTL]
+            for cid in stale:
+                del _oauth_clients[cid]
         if len(_oauth_clients) >= _MAX_CLIENTS:
             return JSONResponse({"error": "temporarily_unavailable"}, status_code=503)
         _oauth_clients[client_id] = {
             "redirect_uris": redirect_uris,
             "client_name": body.get("client_name", ""),
+            "registered_at": _ts(),
         }
     log.info("OAuth client registered: %s name=%r uris=%s", client_id, body.get("client_name", ""), redirect_uris)
     return JSONResponse({
@@ -1579,6 +1593,22 @@ async def handle_register(request: Request) -> Response:
         "response_types": ["code"],
         "token_endpoint_auth_method": "none",
     }, status_code=201)
+
+
+_SECURITY_HEADERS = {
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'",
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+}
+
+
+def _prune_oauth_codes() -> None:
+    """Remove expired auth codes — called inside _oauth_lock."""
+    now = _ts()
+    expired = [c for c, d in _oauth_codes.items() if d["expires_at"] < now]
+    for c in expired:
+        del _oauth_codes[c]
 
 
 _LOGIN_TEMPLATE = """\
@@ -1625,7 +1655,7 @@ async def handle_authorize(request: Request) -> Response:
     state        = params.get("state", "")
     code_challenge        = params.get("code_challenge", "")
     code_challenge_method = params.get("code_challenge_method", "S256")
-    qs = request.url.query
+    qs = html.escape(request.url.query)  # prevent attribute injection in form action
 
     if client_id not in _oauth_clients:
         return PlainTextResponse(
@@ -1634,8 +1664,14 @@ async def handle_authorize(request: Request) -> Response:
     if redirect_uri not in _oauth_clients[client_id]["redirect_uris"]:
         return PlainTextResponse("redirect_uri not registered", status_code=400)
 
+    # PKCE S256 is mandatory — all compliant MCP clients send it
+    if not code_challenge:
+        return PlainTextResponse("code_challenge required (PKCE S256)", status_code=400)
+    if code_challenge_method != "S256":
+        return PlainTextResponse("only S256 code_challenge_method is supported", status_code=400)
+
     if request.method == "GET":
-        return HTMLResponse(_LOGIN_TEMPLATE.format(error="", qs=qs))
+        return HTMLResponse(_LOGIN_TEMPLATE.format(error="", qs=qs), headers=_SECURITY_HEADERS)
 
     # POST — validate password
     ip = _get_ip(request)
@@ -1646,6 +1682,7 @@ async def handle_authorize(request: Request) -> Response:
                 qs=qs,
             ),
             status_code=429,
+            headers=_SECURITY_HEADERS,
         )
 
     form_data = await request.form()
@@ -1658,6 +1695,7 @@ async def handle_authorize(request: Request) -> Response:
                 qs=qs,
             ),
             status_code=503,
+            headers=_SECURITY_HEADERS,
         )
 
     if not _safe_eq(password, COACH_SECRET):
@@ -1665,6 +1703,7 @@ async def handle_authorize(request: Request) -> Response:
         return HTMLResponse(
             _LOGIN_TEMPLATE.format(error='<p class="err">Incorrect password.</p>', qs=qs),
             status_code=401,
+            headers=_SECURITY_HEADERS,
         )
 
     _clear_failures(ip)
@@ -1686,6 +1725,10 @@ async def handle_authorize(request: Request) -> Response:
 
 
 async def handle_token(request: Request) -> Response:
+    ip = _get_ip(request)
+    if not _check_rate_limit(ip):
+        return JSONResponse({"error": "too_many_requests"}, status_code=429)
+
     try:
         form_data = await request.form()
     except Exception:
@@ -1701,6 +1744,7 @@ async def handle_token(request: Request) -> Response:
         return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
 
     async with _oauth_lock:
+        _prune_oauth_codes()
         code_data = _oauth_codes.pop(code, None)  # single-use
 
     if not code_data:
