@@ -104,6 +104,8 @@ _DEFAULT_PROFILE: dict = {
     "sport": "running",
     "age": None,
     "location": "",
+    "timezone": "",
+    "preferred_units": "km",
     "training_days_per_week": None,
     "easy_pace_min_per_km": None,
     "threshold_pace_min_per_km": None,
@@ -567,6 +569,9 @@ async def review_training(activity_id: str = "") -> dict:
     "recommend a training program") also call get_progress to get monthly trend data
     before answering.
 
+    The returned context includes `preferred_units` (km or miles) and `athlete_timezone`.
+    Use these for all distances, paces, and date references in your response.
+
     After calling this tool, provide a coaching review covering:
     1. Latest workout analysis (effort vs intent, HR response, pacing)
     2. Recovery status using the Recovery Index (Section 11 framework, github.com/CrankAddict/section-11):
@@ -584,8 +589,11 @@ async def review_training(activity_id: str = "") -> dict:
     """
     from claude_coach import fetch_context
     ctx = await fetch_context(http(), activity_id)
-    ctx["athlete_profile"] = _load_profile()
+    profile = _load_profile()
+    ctx["athlete_profile"] = profile
     ctx["race_goal"] = _load_goal()
+    ctx["preferred_units"] = profile.get("preferred_units") or "km"
+    ctx["athlete_timezone"] = profile.get("timezone") or "unknown"
     return ctx
 
 
@@ -725,6 +733,10 @@ if not READ_ONLY:
             sport                      e.g. "running", "cycling", "triathlon"
             age                        integer (years)
             location                   city or "lat,lon" — used by get_weather
+            timezone                   IANA timezone e.g. "Europe/Oslo" — used for
+                                       correct date/scheduling decisions
+            preferred_units            "km" (default) or "miles" — Claude uses this
+                                       for all distances in responses
             training_days_per_week     integer
             easy_pace_min_per_km       float (e.g. 6.0 for 6:00/km)
             threshold_pace_min_per_km  float
@@ -736,9 +748,10 @@ if not READ_ONLY:
             updates: Dict of fields to update.
         """
         _PROFILE_FIELDS = frozenset({
-            "sport", "age", "location", "training_days_per_week",
-            "easy_pace_min_per_km", "threshold_pace_min_per_km",
-            "weekly_volume_km", "known_limiters", "notes",
+            "sport", "age", "location", "timezone", "preferred_units",
+            "training_days_per_week", "easy_pace_min_per_km",
+            "threshold_pace_min_per_km", "weekly_volume_km",
+            "known_limiters", "notes",
         })
         profile = _load_profile()
         safe = {k: v for k, v in updates.items() if k in _PROFILE_FIELDS}
@@ -1096,6 +1109,7 @@ def _summarise_activity(a: dict) -> dict:
         "avg_hr": a.get("average_heartrate"),
         "avg_pace_per_km": a.get("icu_average_speed"),
         "avg_power": a.get("average_watts"),
+        "avg_cadence": a.get("average_cadence"),
         "elevation_m": a.get("total_elevation_gain"),
         "ctl": a.get("icu_ctl"),
         "atl": a.get("icu_atl"),

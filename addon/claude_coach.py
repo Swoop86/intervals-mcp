@@ -98,6 +98,8 @@ def load_athlete_profile() -> str:
             "sport": "Sport",
             "age": "Age",
             "location": "Training location",
+            "timezone": "Timezone",
+            "preferred_units": "Preferred units",
             "training_days_per_week": "Training days/week",
             "easy_pace_min_per_km": "Easy pace (min/km)",
             "threshold_pace_min_per_km": "Threshold pace (min/km)",
@@ -230,6 +232,7 @@ def _clean_activity(a: dict) -> dict:
         "ctl": a.get("icu_ctl"),
         "atl": a.get("icu_atl"),
         "tsb": a.get("icu_tsb"),
+        "avg_cadence": a.get("average_cadence"),
         "perceived_effort": a.get("perceived_exertion"),
     }
 
@@ -346,6 +349,13 @@ PERIODIZATION PHASES:
     else:
         mode_context = "\nMODE: General improvement — no specific event targeted. Focus on building aerobic fitness and long-term consistency.\n"
 
+    # Pull preferred units + timezone from profile text if present
+    units_note = ""
+    if "Preferred units: miles" in athlete_profile:
+        units_note = "\nUse miles and min/mile for all distances and paces in your response.\n"
+    elif "Preferred units: km" in athlete_profile or not athlete_profile:
+        units_note = "\nUse kilometres and min/km for all distances and paces.\n"
+
     return f"""You are an expert endurance running coach specialising in training periodization,
 heart rate variability, and load management.
 
@@ -354,7 +364,7 @@ you analyse it and proactively adjust the upcoming plan if needed.
 
 ATHLETE PROFILE:
 {athlete_profile}
-{methodology_section}{mode_context}
+{units_note}{methodology_section}{mode_context}
 YOUR JOB after each workout:
 1. Analyse the completed workout — effort vs intent, HR response, pacing, TSS
 2. Check wellness trends (HRV, resting HR, sleep) for recovery signals
