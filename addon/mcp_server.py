@@ -1097,8 +1097,29 @@ async def get_progress(months: int = 3) -> dict:
     }
 
 
+_RUN_TYPES = frozenset({"Run", "VirtualRun", "TrailRun", "Treadmill"})
+
+
+def _cadence_fields(a: dict) -> dict:
+    """Return cadence field(s) with unambiguous names.
+
+    Garmin records running cadence as one-foot SPM (a single leg), so the raw
+    value stored by intervals.icu is half the true turnover rate. Cycling cadence
+    is already in RPM (both legs), so no doubling is needed.
+    """
+    cadence = a.get("average_cadence")
+    if cadence is None:
+        return {}
+    if a.get("type") in _RUN_TYPES:
+        return {
+            "avg_cadence_spm_per_foot": cadence,
+            "avg_cadence_total_spm": round(cadence * 2, 1),
+        }
+    return {"avg_cadence_rpm": cadence}
+
+
 def _summarise_activity(a: dict) -> dict:
-    return {
+    d = {
         "id": a.get("id"),
         "date": a.get("start_date_local", "")[:10],
         "name": a.get("name"),
@@ -1109,12 +1130,13 @@ def _summarise_activity(a: dict) -> dict:
         "avg_hr": a.get("average_heartrate"),
         "avg_pace_per_km": a.get("icu_average_speed"),
         "avg_power": a.get("average_watts"),
-        "avg_cadence": a.get("average_cadence"),
         "elevation_m": a.get("total_elevation_gain"),
         "ctl": a.get("icu_ctl"),
         "atl": a.get("icu_atl"),
         "tsb": a.get("icu_tsb"),
     }
+    d.update(_cadence_fields(a))
+    return d
 
 
 # ---------------------------------------------------------------------------

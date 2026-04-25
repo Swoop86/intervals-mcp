@@ -218,8 +218,22 @@ async def fetch_context(client: httpx.AsyncClient, activity_id: str) -> dict:
     }
 
 
+_RUN_TYPES = frozenset({"Run", "VirtualRun", "TrailRun", "Treadmill"})
+
+
 def _clean_activity(a: dict) -> dict:
-    return {
+    cadence = a.get("average_cadence")
+    if cadence is not None and a.get("type") in _RUN_TYPES:
+        cadence_fields = {
+            "avg_cadence_spm_per_foot": cadence,
+            "avg_cadence_total_spm": round(cadence * 2, 1),
+        }
+    elif cadence is not None:
+        cadence_fields = {"avg_cadence_rpm": cadence}
+    else:
+        cadence_fields = {}
+
+    d = {
         "id": a.get("id"),
         "date": a.get("start_date_local", "")[:10],
         "name": a.get("name"),
@@ -232,9 +246,10 @@ def _clean_activity(a: dict) -> dict:
         "ctl": a.get("icu_ctl"),
         "atl": a.get("icu_atl"),
         "tsb": a.get("icu_tsb"),
-        "avg_cadence": a.get("average_cadence"),
         "perceived_effort": a.get("perceived_exertion"),
     }
+    d.update(cadence_fields)
+    return d
 
 
 def _clean_wellness(w: dict) -> dict:
