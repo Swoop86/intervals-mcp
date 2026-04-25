@@ -150,21 +150,32 @@ def _auth() -> tuple[str, str]:
     return ("API_KEY", API_KEY)
 
 
+def _icu_raise(r: httpx.Response) -> None:
+    if r.is_error:
+        body = r.text[:800]
+        log.error("intervals.icu %s %s → %d: %s", r.request.method, r.request.url, r.status_code, body)
+        raise httpx.HTTPStatusError(
+            f"HTTP {r.status_code} from intervals.icu: {body}",
+            request=r.request,
+            response=r,
+        )
+
+
 async def icu_get(client: httpx.AsyncClient, path: str, params: dict | None = None) -> Any:
     r = await client.get(f"{BASE_URL}/{path}", auth=_auth(), params=params)
-    r.raise_for_status()
+    _icu_raise(r)
     return r.json()
 
 
 async def icu_put(client: httpx.AsyncClient, path: str, payload: dict) -> Any:
     r = await client.put(f"{BASE_URL}/{path}", auth=_auth(), json=payload)
-    r.raise_for_status()
+    _icu_raise(r)
     return r.json()
 
 
 async def icu_delete(client: httpx.AsyncClient, path: str) -> None:
     r = await client.delete(f"{BASE_URL}/{path}", auth=_auth())
-    r.raise_for_status()
+    _icu_raise(r)
 
 
 # ---------------------------------------------------------------------------

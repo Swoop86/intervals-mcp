@@ -311,27 +311,39 @@ def _icu_auth() -> tuple[str, str]:
     return ("API_KEY", API_KEY)
 
 
+def _icu_raise(r: httpx.Response) -> None:
+    """Raise HTTPStatusError with the response body included so Claude sees the detail."""
+    if r.is_error:
+        body = r.text[:800]
+        log.error("intervals.icu %s %s → %d: %s", r.request.method, r.request.url, r.status_code, body)
+        raise httpx.HTTPStatusError(
+            f"HTTP {r.status_code} from intervals.icu: {body}",
+            request=r.request,
+            response=r,
+        )
+
+
 async def icu_get(path: str, params: dict | None = None) -> Any:
     r = await http().get(f"{BASE_URL}/{path}", auth=_icu_auth(), params=params)
-    r.raise_for_status()
+    _icu_raise(r)
     return r.json()
 
 
 async def icu_post(path: str, payload: Any) -> Any:
     r = await http().post(f"{BASE_URL}/{path}", auth=_icu_auth(), json=payload)
-    r.raise_for_status()
+    _icu_raise(r)
     return r.json()
 
 
 async def icu_put(path: str, payload: Any) -> Any:
     r = await http().put(f"{BASE_URL}/{path}", auth=_icu_auth(), json=payload)
-    r.raise_for_status()
+    _icu_raise(r)
     return r.json()
 
 
 async def icu_delete(path: str) -> None:
     r = await http().delete(f"{BASE_URL}/{path}", auth=_icu_auth())
-    r.raise_for_status()
+    _icu_raise(r)
 
 
 # ---------------------------------------------------------------------------
