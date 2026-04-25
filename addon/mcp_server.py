@@ -485,6 +485,11 @@ async def get_planned_workouts(days_ahead: int = 14) -> list[dict]:
     )
 
 
+def _normalise_date(date: str) -> str:
+    """Ensure start_date_local includes a time component as required by intervals.icu."""
+    return date if "T" in date else f"{date}T00:00:00"
+
+
 if not READ_ONLY:
     @mcp.tool()
     async def create_workout(
@@ -494,24 +499,100 @@ if not READ_ONLY:
         sport_type: str = "Run",
         category: str = "WORKOUT",
         moving_time: int | None = None,
+        distance_km: float | None = None,
         target_tss: float | None = None,
         workout_doc: dict | None = None,
     ) -> dict:
         """Create a planned workout on the calendar. Syncs to Garmin if connected.
 
+        DESCRIPTION FORMATTING
+        Use \\n to separate lines so the workout reads clearly in the app, e.g.:
+            "Easy aerobic run\\n\\nWarmup: 10 min easy (HR <140)\\nMain: 30 min Z2 (HR 140-155)\\nCooldown: 5 min easy"
+
+        GARMIN NATIVE WORKOUT (workout_doc)
+        Always provide workout_doc for any session with specific targets (HR zones, pace
+        zones, intervals). This creates a step-by-step workout on the Garmin watch —
+        identical to Garmin Coach plans — with alerts, zone guidance, and rep countdowns.
+        Without workout_doc the workout appears as a text note only; with it the watch
+        guides the athlete through every step.
+
+        workout_doc for running — heart rate zones (most common for easy/aerobic runs):
+            {
+                "description": "Easy aerobic run",
+                "duration": 2700,
+                "lthr": 165,
+                "target": "HEART_RATE",
+                "steps": [
+                    {"reps": 1, "steps": [
+                        {"duration": 600,  "name": "Warmup",   "heart_rate": {"start": 55, "end": 65, "units": "%lthr"}},
+                    ]},
+                    {"reps": 1, "steps": [
+                        {"duration": 1500, "name": "Main set", "heart_rate": {"start": 65, "end": 75, "units": "%lthr"}},
+                    ]},
+                    {"reps": 1, "steps": [
+                        {"duration": 600,  "name": "Cooldown", "heart_rate": {"start": 55, "end": 65, "units": "%lthr"}},
+                    ]}
+                ]
+            }
+
+        workout_doc for running — intervals with pace targets:
+            {
+                "description": "5x3min threshold",
+                "duration": 3300,
+                "threshold_pace": 2.778,
+                "pace_units": "MINS_KM",
+                "target": "PACE",
+                "steps": [
+                    {"reps": 1, "steps": [
+                        {"duration": 600,  "name": "Warmup",   "pace": {"start": 75, "end": 85, "units": "%threshold"}}
+                    ]},
+                    {"reps": 5, "steps": [
+                        {"duration": 180,  "name": "Interval", "pace": {"start": 95, "end": 100, "units": "%threshold"}},
+                        {"duration": 90,   "name": "Recovery", "pace": {"start": 60, "end": 70, "units": "%threshold"}}
+                    ]},
+                    {"reps": 1, "steps": [
+                        {"duration": 600,  "name": "Cooldown", "pace": {"start": 75, "end": 85, "units": "%threshold"}}
+                    ]}
+                ]
+            }
+
+        workout_doc for cycling — power targets:
+            {
+                "description": "5x3min threshold",
+                "duration": 3600,
+                "ftp": 280,
+                "target": "POWER",
+                "steps": [
+                    {"reps": 1, "steps": [
+                        {"duration": 600,  "name": "Warmup",   "power": {"start": 55, "end": 65, "units": "%ftp"}}
+                    ]},
+                    {"reps": 5, "steps": [
+                        {"duration": 180,  "name": "Interval", "power": {"start": 90, "end": 95, "units": "%ftp"}},
+                        {"duration": 90,   "name": "Recovery", "power": {"start": 50, "end": 55, "units": "%ftp"}}
+                    ]},
+                    {"reps": 1, "steps": [
+                        {"duration": 600,  "name": "Cooldown", "power": {"start": 55, "end": 65, "units": "%ftp"}}
+                    ]}
+                ]
+            }
+
+        Use %lthr units when LTHR is available from get_athlete. Use bpm units as fallback:
+            "heart_rate": {"start": 125, "end": 145, "units": "bpm"}
+
         Args:
-            date:         ISO date YYYY-MM-DD
+            date:         ISO date YYYY-MM-DD (time component added automatically)
             name:         Workout name
-            description:  Full workout description with structure and targets
+            description:  Workout description — use \\n for line breaks
             sport_type:   Run, Ride, Swim, etc. (default Run)
             category:     WORKOUT (default), RACE, NOTES, TARGET,
                           FITNESS_DAYS, SET_FITNESS, or SET_EFTP
             moving_time:  Estimated duration in seconds
+            distance_km:  Target distance in kilometres (e.g. 10.0 for a 10 km run)
             target_tss:   Target Training Stress Score
-            workout_doc:  Structured workout in intervals.icu format
+            workout_doc:  Structured workout for Garmin-native step-by-step guidance
         """
         payload = {
-            "start_date_local": date,
+            "start_date_local": _normalise_date(date),
             "name": name,
             "type": sport_type,
             "category": category,
@@ -519,6 +600,8 @@ if not READ_ONLY:
         }
         if moving_time is not None:
             payload["moving_time"] = moving_time
+        if distance_km is not None:
+            payload["distance"] = round(distance_km * 1000)
         if target_tss is not None:
             payload["icu_training_load"] = target_tss
         if workout_doc is not None:
@@ -621,7 +704,7 @@ if not READ_ONLY:
             description: New description with structure/targets
             moving_time: New estimated duration in seconds
             target_tss: New target Training Stress Score
-            date: New date as ISO YYYY-MM-DD (reschedule)
+            date: New date as ISO YYYY-MM-DD (reschedule; time component added automatically)
         """
         payload: dict[str, Any] = {}
         if name is not None:
@@ -633,7 +716,7 @@ if not READ_ONLY:
         if target_tss is not None:
             payload["icu_training_load"] = target_tss
         if date is not None:
-            payload["start_date_local"] = date
+            payload["start_date_local"] = _normalise_date(date)
         if not payload:
             return {"error": "No fields provided to update"}
         return await icu_put(f"athlete/{ATHLETE_ID}/events/{event_id}", payload)
@@ -662,19 +745,66 @@ if not READ_ONLY:
         Prefer this over calling create_workout repeatedly. Workouts sync to Garmin Connect
         automatically (up to 7 days ahead) if the athlete has connected Garmin in settings.
 
+        DESCRIPTION FORMATTING: Use \\n between sections so the workout reads clearly in
+        the intervals.icu app. E.g. "Warmup: 10 min easy\\nMain: 3x10 min threshold\\nCooldown: 5 min easy"
+
+        GARMIN NATIVE WORKOUTS: Always include workout_doc for sessions with specific
+        targets. This creates a step-by-step guided workout on the Garmin watch (like
+        Garmin Coach) with HR alerts, pace guidance, and rep countdowns per step.
+
         Each dict in the list supports these fields:
-            start_date_local  (required) ISO date YYYY-MM-DD
+            start_date_local  (required) ISO date YYYY-MM-DD (time component added automatically)
             name              (required) Workout name
             type              (required) Sport: Run, Ride, Swim, VirtualRide, etc.
-            description       (required) Free-text workout description
+            description       (required) Free-text workout description — use \\n for line breaks
             category          WORKOUT (default), RACE, NOTES, TARGET,
                               FITNESS_DAYS, SET_FITNESS, SET_EFTP
             moving_time       Estimated duration in seconds
+            distance_km       Target distance in kilometres — converted to metres automatically
             icu_training_load Target TSS
-            workout_doc       Structured workout — enables interval-by-interval targets on
-                              Garmin and other devices (see format below)
+            workout_doc       Structured workout for Garmin-native step-by-step guidance
 
-        workout_doc for cycling (power):
+        workout_doc for running — heart rate zones:
+            {
+                "description": "Easy aerobic run",
+                "duration": 2700,
+                "lthr": 165,
+                "target": "HEART_RATE",
+                "steps": [
+                    {"reps": 1, "steps": [
+                        {"duration": 600,  "name": "Warmup",   "heart_rate": {"start": 55, "end": 65, "units": "%lthr"}}
+                    ]},
+                    {"reps": 1, "steps": [
+                        {"duration": 1500, "name": "Main set", "heart_rate": {"start": 65, "end": 75, "units": "%lthr"}}
+                    ]},
+                    {"reps": 1, "steps": [
+                        {"duration": 600,  "name": "Cooldown", "heart_rate": {"start": 55, "end": 65, "units": "%lthr"}}
+                    ]}
+                ]
+            }
+
+        workout_doc for running — pace intervals:
+            {
+                "description": "5x3min threshold",
+                "duration": 3300,
+                "threshold_pace": 2.778,
+                "pace_units": "MINS_KM",
+                "target": "PACE",
+                "steps": [
+                    {"reps": 1, "steps": [
+                        {"duration": 600,  "name": "Warmup",   "pace": {"start": 75, "end": 85, "units": "%threshold"}}
+                    ]},
+                    {"reps": 5, "steps": [
+                        {"duration": 180,  "name": "Interval", "pace": {"start": 95, "end": 100, "units": "%threshold"}},
+                        {"duration": 90,   "name": "Recovery", "pace": {"start": 60, "end": 70,  "units": "%threshold"}}
+                    ]},
+                    {"reps": 1, "steps": [
+                        {"duration": 600,  "name": "Cooldown", "pace": {"start": 75, "end": 85, "units": "%threshold"}}
+                    ]}
+                ]
+            }
+
+        workout_doc for cycling — power:
             {
                 "description": "5x3min threshold",
                 "duration": 3600,
@@ -682,43 +812,36 @@ if not READ_ONLY:
                 "target": "POWER",
                 "steps": [
                     {"reps": 1, "steps": [
-                        {"duration": 600, "power": {"start": 55, "end": 65, "units": "%ftp"}}
+                        {"duration": 600,  "name": "Warmup",   "power": {"start": 55, "end": 65, "units": "%ftp"}}
                     ]},
                     {"reps": 5, "steps": [
-                        {"duration": 180, "power": {"start": 90, "end": 95, "units": "%ftp"}},
-                        {"duration": 90,  "power": {"start": 50, "end": 55, "units": "%ftp"}}
+                        {"duration": 180,  "name": "Interval", "power": {"start": 90, "end": 95, "units": "%ftp"}},
+                        {"duration": 90,   "name": "Recovery", "power": {"start": 50, "end": 55, "units": "%ftp"}}
                     ]},
                     {"reps": 1, "steps": [
-                        {"duration": 600, "power": {"start": 55, "end": 65, "units": "%ftp"}}
+                        {"duration": 600,  "name": "Cooldown", "power": {"start": 55, "end": 65, "units": "%ftp"}}
                     ]}
                 ]
             }
 
-        workout_doc for running (pace):
-            {
-                "description": "Easy 30min",
-                "duration": 1800,
-                "threshold_pace": 2.778,
-                "pace_units": "MINS_KM",
-                "target": "PACE",
-                "steps": [
-                    {"reps": 1, "steps": [
-                        {"duration": 1800, "pace": {"start": 75, "end": 85, "units": "%threshold"}}
-                    ]}
-                ]
-            }
+        Use %lthr / %ftp when those values are available from get_athlete.
+        Fallback: "heart_rate": {"start": 125, "end": 145, "units": "bpm"}
 
         Args:
             workouts: List of workout objects to create on the calendar.
         """
         _PLAN_FIELDS = frozenset({
             "start_date_local", "name", "type", "category", "description",
-            "moving_time", "icu_training_load", "workout_doc",
+            "moving_time", "distance", "icu_training_load", "workout_doc",
         })
         safe = []
         for w in workouts:
             entry = {k: v for k, v in w.items() if k in _PLAN_FIELDS}
             entry.setdefault("category", "WORKOUT")
+            if "distance_km" in w and "distance" not in entry:
+                entry["distance"] = round(w["distance_km"] * 1000)
+            if "start_date_local" in entry:
+                entry["start_date_local"] = _normalise_date(entry["start_date_local"])
             safe.append(entry)
         return await icu_post(f"athlete/{ATHLETE_ID}/events/bulk", safe)
 

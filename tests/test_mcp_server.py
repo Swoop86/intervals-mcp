@@ -1312,6 +1312,21 @@ class TestUpdateWorkoutTool:
         assert "description" not in captured_payload
         assert "moving_time" not in captured_payload
 
+    async def test_date_normalised_to_datetime(self):
+        import mcp_server
+
+        captured_payload: dict = {}
+
+        async def fake_put(path: str, payload: dict):
+            captured_payload.update(payload)
+            return {}
+
+        with patch.object(mcp_server, "icu_put", new=fake_put):
+            from mcp_server import update_workout
+            await update_workout(event_id=1, date="2026-05-10")
+
+        assert captured_payload["start_date_local"] == "2026-05-10T00:00:00"
+
 
 class TestDeleteWorkoutTool:
     async def test_calls_icu_delete_with_correct_path(self):
@@ -1348,8 +1363,12 @@ class TestCreatePlanTool:
         assert len(sent) == len(workouts)
         for w, s in zip(workouts, sent):
             for k, v in w.items():
-                assert s[k] == v
+                if k == "start_date_local":
+                    assert s[k].startswith(v)
+                else:
+                    assert s[k] == v
             assert s["category"] == "WORKOUT"
+            assert "T" in s["start_date_local"]
         assert result == post_response
 
     async def test_passes_workout_doc(self):
@@ -1369,6 +1388,46 @@ class TestCreatePlanTool:
 
         sent_payload = mock_post.call_args[0][1]
         assert sent_payload[0]["workout_doc"] == workout_doc
+
+    async def test_distance_km_converted_to_metres(self):
+        import mcp_server
+
+        workouts = [{"start_date_local": "2026-04-25", "name": "Easy Run",
+                     "type": "Run", "description": "Easy", "distance_km": 6.0}]
+
+        with patch.object(mcp_server, "icu_post", new=AsyncMock(return_value=[{"id": 1}])) as mock_post:
+            from mcp_server import create_plan
+            await create_plan(workouts)
+
+        sent = mock_post.call_args[0][1][0]
+        assert sent["distance"] == 6000
+        assert "distance_km" not in sent
+
+    async def test_date_normalised_to_datetime(self):
+        import mcp_server
+
+        workouts = [{"start_date_local": "2026-05-01", "name": "Run",
+                     "type": "Run", "description": "Easy"}]
+
+        with patch.object(mcp_server, "icu_post", new=AsyncMock(return_value=[{"id": 1}])) as mock_post:
+            from mcp_server import create_plan
+            await create_plan(workouts)
+
+        sent = mock_post.call_args[0][1][0]
+        assert sent["start_date_local"] == "2026-05-01T00:00:00"
+
+    async def test_full_datetime_unchanged(self):
+        import mcp_server
+
+        workouts = [{"start_date_local": "2026-05-01T06:30:00", "name": "Run",
+                     "type": "Run", "description": "Morning run"}]
+
+        with patch.object(mcp_server, "icu_post", new=AsyncMock(return_value=[{"id": 1}])) as mock_post:
+            from mcp_server import create_plan
+            await create_plan(workouts)
+
+        sent = mock_post.call_args[0][1][0]
+        assert sent["start_date_local"] == "2026-05-01T06:30:00"
 
 
 # ---------------------------------------------------------------------------
