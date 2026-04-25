@@ -428,19 +428,44 @@ async def get_wellness(days: int = 14) -> list[dict]:
     )
 
 
+def _ms_to_min_per_km(speed_ms: float) -> float | None:
+    """Convert m/s to min/km, return None if speed is zero/invalid."""
+    if not speed_ms or speed_ms <= 0:
+        return None
+    return round(1000 / (speed_ms * 60), 2)
+
+
 @mcp.tool()
 async def get_athlete() -> dict:
-    """Get athlete data from intervals.icu: FTP, LTHR, weight, and sport zones.
+    """Get athlete data from intervals.icu: FTP, LTHR, weight, sport zones, and
+    running/cycling threshold values synced from Garmin or set in the GUI.
 
-    Returns cycling FTP, lactate threshold HR (LTHR), body weight, and per-sport
-    zone configuration stored in intervals.icu.
+    Post-processes the raw response to surface running threshold pace clearly:
+    - running_threshold_pace_min_per_km  derived from sportSettings[Run].threshold_pace
+    - running_pace_zones_min_per_km      zone boundaries for running in min/km
 
-    NOTE: Running paces (easy pace, threshold pace) are NOT stored in intervals.icu —
-    they live in the local coaching profile. Always call get_profile as well when you
-    need threshold_pace_min_per_km or easy_pace_min_per_km to write pace-based workout
-    descriptions or confirm targets with the athlete.
+    Use this together with get_profile (which stores the user's self-reported paces)
+    when writing pace-based workout descriptions. Prefer the intervals.icu value
+    (synced from Garmin) over the profile value when both are present.
     """
-    return await icu_get(f"athlete/{ATHLETE_ID}")
+    data = await icu_get(f"athlete/{ATHLETE_ID}")
+
+    # Extract and convert running sport settings for easy consumption
+    sport_settings = data.get("sportSettings") or []
+    for ss in sport_settings:
+        if ss.get("activity_type") == "Run":
+            tp = ss.get("threshold_pace")
+            if tp:
+                data["running_threshold_pace_min_per_km"] = _ms_to_min_per_km(tp)
+            # pace_zones is a list of m/s boundaries — convert all to min/km
+            pz = ss.get("pace_zones") or []
+            if pz:
+                data["running_pace_zones_min_per_km"] = [
+                    _ms_to_min_per_km(v) for v in pz if v
+                ]
+            break
+
+    return data
 
 
 @mcp.tool()
@@ -541,12 +566,12 @@ if not READ_ONLY:
         Sections:        Warmup / Main Set / Cooldown on their own lines
 
         BEFORE WRITING TARGETS — call these first if not already in context:
-          get_profile  → threshold_pace_min_per_km, easy_pace_min_per_km, LTHR zone context
-          get_athlete  → LTHR (bpm), FTP (watts), sport zones from intervals.icu
+          get_athlete  → running_threshold_pace_min_per_km (synced from Garmin), LTHR, FTP
+          get_profile  → fallback threshold_pace_min_per_km if get_athlete has none
 
-        Use LTHR% when LTHR is available from get_athlete; fall back to Z1-Z3 HR zones
-        or absolute BPM. Use threshold_pace_min_per_km from get_profile for Pace targets.
-        Use %FTP for cycling when FTP is available.
+        Prefer running_threshold_pace_min_per_km from get_athlete (Garmin-synced) over
+        the profile value. Use LTHR% when LTHR is available; fall back to Z1-Z3 HR zones
+        or absolute BPM. Use %FTP for cycling when FTP is available.
 
         Args:
             date:         ISO date YYYY-MM-DD (time component added automatically)
@@ -750,11 +775,11 @@ if not READ_ONLY:
         Sections:     Warmup / Main Set / Cooldown as their own lines
 
         BEFORE WRITING TARGETS — call these first if not already in context:
-          get_profile  → threshold_pace_min_per_km, easy_pace_min_per_km
-          get_athlete  → LTHR (bpm), FTP (watts)
+          get_athlete  → running_threshold_pace_min_per_km (synced from Garmin), LTHR, FTP
+          get_profile  → fallback threshold_pace_min_per_km if get_athlete has none
 
-        Use LTHR% when LTHR is available from get_athlete; fall back to Z1-Z3 HR zones.
-        Use threshold_pace_min_per_km from get_profile for Pace targets.
+        Prefer running_threshold_pace_min_per_km from get_athlete (Garmin-synced) over
+        the profile value. Use LTHR% when LTHR is available; fall back to Z1-Z3 HR zones.
         Use %FTP for cycling when FTP is available.
 
         Args:

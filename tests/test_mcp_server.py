@@ -1225,6 +1225,66 @@ class TestOAuthFullFlow:
 # MCP tools — review_training, update_workout, delete_workout
 # ---------------------------------------------------------------------------
 
+class TestGetAthleteTool:
+    async def test_extracts_running_threshold_pace(self):
+        import mcp_server
+
+        raw = {
+            "id": "i123",
+            "ftp": 250,
+            "sportSettings": [
+                {"activity_type": "Ride", "threshold_pace": None},
+                {"activity_type": "Run", "threshold_pace": 3.509},  # ~4:45/km
+            ],
+        }
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=raw)):
+            from mcp_server import get_athlete
+            result = await get_athlete()
+
+        # 1000 / (3.509 * 60) ≈ 4.75 min/km
+        assert result["running_threshold_pace_min_per_km"] == pytest.approx(4.75, abs=0.05)
+
+    async def test_no_run_settings_skips_field(self):
+        import mcp_server
+
+        raw = {"id": "i123", "sportSettings": [{"activity_type": "Ride", "threshold_pace": 5.0}]}
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=raw)):
+            from mcp_server import get_athlete
+            result = await get_athlete()
+
+        assert "running_threshold_pace_min_per_km" not in result
+
+    async def test_pace_zones_converted(self):
+        import mcp_server
+
+        raw = {
+            "id": "i123",
+            "sportSettings": [
+                {"activity_type": "Run", "threshold_pace": 3.509,
+                 "pace_zones": [2.0, 2.8, 3.2, 3.6, 4.2]},
+            ],
+        }
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=raw)):
+            from mcp_server import get_athlete
+            result = await get_athlete()
+
+        zones = result["running_pace_zones_min_per_km"]
+        assert len(zones) == 5
+        # 2.0 m/s = 1000/(2.0*60) = 8.33 min/km
+        assert zones[0] == pytest.approx(8.33, abs=0.05)
+
+    async def test_missing_sport_settings_key(self):
+        import mcp_server
+
+        raw = {"id": "i123", "ftp": 280}
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=raw)):
+            from mcp_server import get_athlete
+            result = await get_athlete()
+
+        assert result["ftp"] == 280
+        assert "running_threshold_pace_min_per_km" not in result
+
+
 class TestReviewTrainingTool:
     async def test_returns_context_dict(self):
         fake_context = {
