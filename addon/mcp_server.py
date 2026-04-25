@@ -435,36 +435,93 @@ def _ms_to_min_per_km(speed_ms: float) -> float | None:
     return round(1000 / (speed_ms * 60), 2)
 
 
-@mcp.tool()
-async def get_athlete() -> dict:
-    """Get athlete data from intervals.icu: FTP, LTHR, weight, sport zones, and
-    running/cycling threshold values synced from Garmin or set in the GUI.
+def _ms_to_min_per_100m(speed_ms: float) -> float | None:
+    """Convert m/s to min/100m for swimming, return None if speed is zero/invalid."""
+    if not speed_ms or speed_ms <= 0:
+        return None
+    return round(100 / (speed_ms * 60), 2)
 
-    Post-processes the raw response to surface running threshold pace clearly:
-    - running_threshold_pace_min_per_km  derived from sportSettings[Run].threshold_pace
-    - running_pace_zones_min_per_km      zone boundaries for running in min/km
 
-    Use this together with get_profile (which stores the user's self-reported paces)
-    when writing pace-based workout descriptions. Prefer the intervals.icu value
-    (synced from Garmin) over the profile value when both are present.
-    """
-    data = await icu_get(f"athlete/{ATHLETE_ID}")
-
-    # Extract and convert running sport settings for easy consumption
+def _extract_sport_zones(data: dict) -> None:
+    """Extract per-sport coaching fields from sportSettings and add them to data."""
     sport_settings = data.get("sportSettings") or []
     for ss in sport_settings:
-        if ss.get("activity_type") == "Run":
+        sport = ss.get("activity_type")
+        if not sport:
+            continue
+
+        prefix = sport.lower()  # "run", "ride", "swim", etc.
+
+        # LTHR per sport
+        if ss.get("lthr"):
+            data[f"{prefix}_lthr_bpm"] = ss["lthr"]
+
+        # Max HR per sport
+        if ss.get("max_heart_rate"):
+            data[f"{prefix}_max_hr_bpm"] = ss["max_heart_rate"]
+
+        # HR zone boundaries (bpm) — same for all sports
+        hr_zones = ss.get("zones_heart_rate") or []
+        if hr_zones:
+            data[f"{prefix}_hr_zones_bpm"] = hr_zones
+
+        if sport == "Run":
             tp = ss.get("threshold_pace")
             if tp:
                 data["running_threshold_pace_min_per_km"] = _ms_to_min_per_km(tp)
-            # pace_zones is a list of m/s boundaries — convert all to min/km
             pz = ss.get("pace_zones") or []
             if pz:
                 data["running_pace_zones_min_per_km"] = [
                     _ms_to_min_per_km(v) for v in pz if v
                 ]
-            break
 
+        elif sport == "Ride":
+            # Prefer sport-specific FTP; fall back to threshold_power
+            ride_ftp = ss.get("ftp") or ss.get("threshold_power")
+            if ride_ftp:
+                data["cycling_ftp_watts"] = ride_ftp
+            pwr_zones = ss.get("zones_power") or []
+            if pwr_zones:
+                data["cycling_power_zones_watts"] = pwr_zones
+
+        elif sport == "Swim":
+            # CSS (Critical Swim Speed) stored as threshold_pace in m/s
+            css = ss.get("threshold_pace")
+            if css:
+                data["swim_css_min_per_100m"] = _ms_to_min_per_100m(css)
+
+
+@mcp.tool()
+async def get_athlete() -> dict:
+    """Get athlete data from intervals.icu: FTP, LTHR, weight, and per-sport zones
+    synced from Garmin or configured in the intervals.icu GUI.
+
+    Post-processes sportSettings to surface coaching values at the top level:
+
+    Running:
+      running_threshold_pace_min_per_km  threshold pace synced from Garmin
+      running_pace_zones_min_per_km      all pace zone boundaries
+      run_lthr_bpm                       running-specific LTHR
+      run_max_hr_bpm                     running max HR
+      run_hr_zones_bpm                   running HR zone boundaries
+
+    Cycling:
+      cycling_ftp_watts                  cycling FTP
+      cycling_power_zones_watts          power zone boundaries
+      ride_lthr_bpm                      cycling LTHR
+      ride_max_hr_bpm                    cycling max HR
+      ride_hr_zones_bpm                  cycling HR zone boundaries
+
+    Swimming:
+      swim_css_min_per_100m              critical swim speed
+      swim_lthr_bpm / swim_hr_zones_bpm  swimming HR zones
+
+    Use running_threshold_pace_min_per_km for Pace targets in workout descriptions.
+    Use run_lthr_bpm (or top-level lthr) for LTHR% targets.
+    Prefer these intervals.icu values (Garmin-synced) over get_profile fallbacks.
+    """
+    data = await icu_get(f"athlete/{ATHLETE_ID}")
+    _extract_sport_zones(data)
     return data
 
 

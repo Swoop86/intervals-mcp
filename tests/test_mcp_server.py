@@ -1234,25 +1234,71 @@ class TestGetAthleteTool:
             "ftp": 250,
             "sportSettings": [
                 {"activity_type": "Ride", "threshold_pace": None},
-                {"activity_type": "Run", "threshold_pace": 3.509},  # ~4:45/km
+                {"activity_type": "Run", "threshold_pace": 3.509},  # ~4:75 min/km
             ],
         }
         with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=raw)):
             from mcp_server import get_athlete
             result = await get_athlete()
 
-        # 1000 / (3.509 * 60) ≈ 4.75 min/km
         assert result["running_threshold_pace_min_per_km"] == pytest.approx(4.75, abs=0.05)
 
-    async def test_no_run_settings_skips_field(self):
+    async def test_extracts_run_lthr_and_max_hr(self):
         import mcp_server
 
-        raw = {"id": "i123", "sportSettings": [{"activity_type": "Ride", "threshold_pace": 5.0}]}
+        raw = {
+            "id": "i123",
+            "sportSettings": [
+                {"activity_type": "Run", "threshold_pace": 3.509,
+                 "lthr": 162, "max_heart_rate": 190,
+                 "zones_heart_rate": [120, 140, 155, 165, 175]},
+            ],
+        }
         with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=raw)):
             from mcp_server import get_athlete
             result = await get_athlete()
 
-        assert "running_threshold_pace_min_per_km" not in result
+        assert result["run_lthr_bpm"] == 162
+        assert result["run_max_hr_bpm"] == 190
+        assert result["run_hr_zones_bpm"] == [120, 140, 155, 165, 175]
+
+    async def test_extracts_cycling_ftp_and_power_zones(self):
+        import mcp_server
+
+        raw = {
+            "id": "i123",
+            "sportSettings": [
+                {"activity_type": "Ride", "ftp": 280, "lthr": 155,
+                 "max_heart_rate": 185,
+                 "zones_power": [140, 196, 252, 280, 336, 392],
+                 "zones_heart_rate": [115, 135, 150, 162, 172]},
+            ],
+        }
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=raw)):
+            from mcp_server import get_athlete
+            result = await get_athlete()
+
+        assert result["cycling_ftp_watts"] == 280
+        assert result["cycling_power_zones_watts"] == [140, 196, 252, 280, 336, 392]
+        assert result["ride_lthr_bpm"] == 155
+        assert result["ride_max_hr_bpm"] == 185
+        assert result["ride_hr_zones_bpm"] == [115, 135, 150, 162, 172]
+
+    async def test_extracts_swim_css(self):
+        import mcp_server
+
+        raw = {
+            "id": "i123",
+            "sportSettings": [
+                {"activity_type": "Swim", "threshold_pace": 1.389},  # ~1:12/100m
+            ],
+        }
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=raw)):
+            from mcp_server import get_athlete
+            result = await get_athlete()
+
+        # 100 / (1.389 * 60) ≈ 1.20 min/100m
+        assert result["swim_css_min_per_100m"] == pytest.approx(1.20, abs=0.02)
 
     async def test_pace_zones_converted(self):
         import mcp_server
@@ -1270,8 +1316,18 @@ class TestGetAthleteTool:
 
         zones = result["running_pace_zones_min_per_km"]
         assert len(zones) == 5
-        # 2.0 m/s = 1000/(2.0*60) = 8.33 min/km
         assert zones[0] == pytest.approx(8.33, abs=0.05)
+
+    async def test_no_run_settings_skips_running_fields(self):
+        import mcp_server
+
+        raw = {"id": "i123", "sportSettings": [{"activity_type": "Ride", "ftp": 280}]}
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=raw)):
+            from mcp_server import get_athlete
+            result = await get_athlete()
+
+        assert "running_threshold_pace_min_per_km" not in result
+        assert result["cycling_ftp_watts"] == 280
 
     async def test_missing_sport_settings_key(self):
         import mcp_server
