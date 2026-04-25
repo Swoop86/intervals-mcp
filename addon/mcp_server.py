@@ -419,13 +419,44 @@ async def get_activities(days: int = 14, oldest: str | None = None, newest: str 
 async def get_wellness(days: int = 14) -> list[dict]:
     """Get wellness data: HRV, resting HR, sleep, weight, mood, motivation.
 
+    Returns one entry per day with all available fields:
+      hrv             Raw HRV value (ms)
+      hrv_score       HRV4Training readiness score (0–10) if connected
+      resting_hr      Resting heart rate (bpm)
+      sleep_hours     Total sleep duration
+      sleep_quality   Subjective quality rating (1–5)
+      sleep_score     Device sleep score if available
+      spo2            Blood oxygen saturation (%)
+      mood / motivation / soreness / fatigue  Subjective 1–5 ratings
+
+    For readiness analysis (HRV z-score, HRV-CV, ACWR, Recovery Index),
+    use review_training which pre-computes these in readiness_metrics.
+
     Args:
         days: Number of past days to fetch (default 14, max 365)
     """
-    return await icu_get(
+    raw = await icu_get(
         f"athlete/{ATHLETE_ID}/wellness",
         params={"oldest": days_ago_iso(days), "newest": today_iso()},
     )
+    return [
+        {
+            "date": w.get("id"),
+            "hrv": w.get("hrv"),
+            "hrv_score": w.get("hrvScore"),
+            "resting_hr": w.get("restingHR"),
+            "sleep_hours": round(w["sleepSecs"] / 3600, 1) if w.get("sleepSecs") else None,
+            "sleep_quality": w.get("sleepQuality"),
+            "sleep_score": w.get("sleepScore"),
+            "spo2": w.get("spO2"),
+            "weight_kg": w.get("weight"),
+            "mood": w.get("mood"),
+            "motivation": w.get("motivation"),
+            "soreness": w.get("soreness"),
+            "fatigue": w.get("fatigue"),
+        }
+        for w in raw
+    ]
 
 
 def _ms_to_min_per_km(speed_ms: float) -> float | None:
@@ -708,16 +739,50 @@ async def review_training(activity_id: str = "") -> dict:
     The returned context includes `preferred_units` (km or miles) and `athlete_timezone`.
     Use these for all distances, paces, and date references in your response.
 
-    After calling this tool, provide a coaching review covering:
-    1. Latest workout analysis (effort vs intent, HR response, pacing)
-    2. Recovery status using the Recovery Index (Section 11 framework, github.com/CrankAddict/section-11):
-       RI = (HRV_today/HRV_baseline) / (RHR_today/RHR_baseline)
-       - RI ≥ 0.8 = Green, RI 0.7–0.79 = Amber, RI < 0.6 = Red
-    3. Training load assessment (ACWR):
-       ACWR = 7-day TSS / 28-day average TSS
-       - Safe range 0.8–1.3; flag ≥1.3; alarm ≥1.5
-    4. Current training phase (Base/Build/Peak/Taper/Deload/Overreached)
-    5. Specific plan adjustments if needed (use update_workout / delete_workout / create_plan)
+    The returned context includes a pre-computed `readiness_metrics` block with:
+      hrv_today, hrv_7day_mean, hrv_cv_7day_pct, hrv_cv_flag
+      hrv_zscore_today, recovery_index, recovery_index_flag
+      acwr, acwr_flag, tss_last_7_days, tss_last_28_days
+
+    Use these directly — do not recompute from the raw wellness list.
+
+    COACHING REVIEW — cover these points after calling this tool:
+
+    1. Latest workout — effort vs intent, HR response, pacing execution
+
+    2. Recovery status
+       Use readiness_metrics.recovery_index (RI) and recovery_index_flag:
+         Green (≥0.8): normal/hard session permitted
+         Amber (0.7–0.79): reduce intensity, no new hard sessions
+         Red (<0.7): easy/rest only
+       Also check hrv_zscore_today: below −1.5 = suppressed, above +1.5 = elevated
+
+    3. HRV pattern (compound signal — do NOT rely on a single day)
+       hrv_cv_7day_pct interpretation (readiness_metrics.hrv_cv_flag):
+         <15% stable: consistent recovery, intensity permitted
+         15–25% moderate: standard programming
+         >25% volatile: restrict intensity even if today's HRV looks fine —
+           this indicates underlying chronic stress the daily reading misses
+
+    4. Training load
+       Use readiness_metrics.acwr and acwr_flag:
+         0.8–1.3 optimal | <0.8 underloading | >1.3 caution | >1.5 danger
+       Check tss_last_7_days vs tss_last_28_days for weekly trend
+
+    5. Action hierarchy (apply in order, stop at first match):
+         REST      — RI < 0.6 OR HRV z-score < −2.0 OR ACWR > 1.5
+         REDUCE    — RI 0.6–0.79 OR HRV z-score < −1.5 OR hrv_cv > 25%
+         CAP ZONES — single metric borderline (one flag amber, rest green)
+         MONITOR   — all green, no action needed
+
+    6. Mid-week steering
+       If earlier sessions this week exceeded TSS targets → scale down remaining days
+       If behind weekly target → scale up within ACWR safety limits
+
+    7. Current training phase (Base/Build/Peak/Taper) and plan adjustments
+
+    IMPORTANT: Use compound patterns — do not recommend rest based on a single
+    metric spike. Require multiple signals before major load changes.
 
     Args:
         activity_id: Optional specific activity ID to focus on (e.g. 'i12345678').

@@ -13,7 +13,7 @@ import os
 import json
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -203,10 +203,13 @@ async def fetch_context(client: httpx.AsyncClient, activity_id: str) -> dict:
     if not latest and activities_sorted:
         latest = activities_sorted[-1]
 
+    clean_wellness = [_clean_wellness(w) for w in wellness]
+    clean_activities = [_clean_activity(a) for a in activities_sorted]
+
     return {
         "latest_activity": _clean_activity(latest) if latest else None,
-        "recent_activities": [_clean_activity(a) for a in activities_sorted],
-        "wellness": [_clean_wellness(w) for w in wellness],
+        "recent_activities": clean_activities,
+        "wellness": clean_wellness,
         "planned_workouts": [
             _clean_planned(e) for e in planned if e.get("type") != "Note"
         ],
@@ -215,6 +218,7 @@ async def fetch_context(client: httpx.AsyncClient, activity_id: str) -> dict:
             "atl": latest.get("icu_atl") if latest else None,
             "tsb": latest.get("icu_tsb") if latest else None,
         },
+        "readiness_metrics": _compute_readiness_metrics(clean_wellness, clean_activities),
     }
 
 
@@ -256,11 +260,114 @@ def _clean_wellness(w: dict) -> dict:
     return {
         "date": w.get("id"),
         "hrv": w.get("hrv"),
+        "hrv_score": w.get("hrvScore"),        # HRV4Training readiness score (0–10)
         "resting_hr": w.get("restingHR"),
         "sleep_hours": round(w["sleepSecs"] / 3600, 1) if w.get("sleepSecs") else None,
+        "sleep_quality": w.get("sleepQuality"), # 1–5 subjective rating
+        "sleep_score": w.get("sleepScore"),     # device sleep score if available
+        "spo2": w.get("spO2"),
         "weight_kg": w.get("weight"),
         "mood": w.get("mood"),
         "motivation": w.get("motivation"),
+        "soreness": w.get("soreness"),
+        "fatigue": w.get("fatigue"),
+    }
+
+
+def _compute_readiness_metrics(wellness: list[dict], activities: list[dict]) -> dict:
+    """Pre-compute HRV and load metrics so Claude gets labelled numbers, not raw lists."""
+    import math
+
+    # --- HRV metrics ---
+    hrv_vals = [w["hrv"] for w in wellness if w.get("hrv")]
+    today_hrv = hrv_vals[-1] if hrv_vals else None
+    hrv_7 = hrv_vals[-7:] if len(hrv_vals) >= 2 else hrv_vals
+
+    hrv_mean = sum(hrv_7) / len(hrv_7) if hrv_7 else None
+    hrv_std = None
+    hrv_cv = None
+    hrv_zscore = None
+
+    if hrv_7 and len(hrv_7) >= 2 and hrv_mean:
+        variance = sum((v - hrv_mean) ** 2 for v in hrv_7) / len(hrv_7)
+        hrv_std = math.sqrt(variance)
+        hrv_cv = round(hrv_std / hrv_mean * 100, 1)
+        if today_hrv is not None:
+            hrv_zscore = round((today_hrv - hrv_mean) / hrv_std, 2) if hrv_std > 0 else 0.0
+
+    # HRV-CV interpretation (IntervalCoach thresholds)
+    hrv_cv_flag = None
+    if hrv_cv is not None:
+        if hrv_cv < 15:
+            hrv_cv_flag = "stable — consistent recovery, intensity permitted"
+        elif hrv_cv < 25:
+            hrv_cv_flag = "moderate — standard programming"
+        else:
+            hrv_cv_flag = "volatile — restrict intensity despite daily readings"
+
+    # --- Resting HR trend ---
+    rhr_vals = [w["resting_hr"] for w in wellness if w.get("resting_hr")]
+    rhr_7 = rhr_vals[-7:] if len(rhr_vals) >= 2 else rhr_vals
+    rhr_mean = round(sum(rhr_7) / len(rhr_7), 1) if rhr_7 else None
+    today_rhr = rhr_vals[-1] if rhr_vals else None
+
+    # --- Recovery Index (RI) ---
+    ri = None
+    ri_flag = None
+    if today_hrv and hrv_mean and today_rhr and rhr_mean and rhr_mean > 0:
+        ri = round((today_hrv / hrv_mean) / (today_rhr / rhr_mean), 2)
+        if ri >= 0.8:
+            ri_flag = "green"
+        elif ri >= 0.7:
+            ri_flag = "amber"
+        else:
+            ri_flag = "red"
+
+    # --- ACWR ---
+    # Activities sorted oldest→newest; TSS per day
+    acts_sorted = sorted(activities, key=lambda a: a.get("date", ""))
+    tss_by_date: dict[str, float] = {}
+    for a in acts_sorted:
+        d = (a.get("date") or "")[:10]
+        if d:
+            tss_by_date[d] = tss_by_date.get(d, 0) + (a.get("tss") or 0)
+
+    today_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+    dates_28 = [(datetime.now(tz=timezone.utc) - timedelta(days=i)).strftime("%Y-%m-%d")
+                for i in range(28)]
+    dates_7 = dates_28[:7]
+
+    tss_7 = sum(tss_by_date.get(d, 0) for d in dates_7)
+    tss_28 = sum(tss_by_date.get(d, 0) for d in dates_28)
+    avg_daily_28 = tss_28 / 28
+
+    acwr = round(tss_7 / (avg_daily_28 * 7), 2) if avg_daily_28 > 0 else None
+    acwr_flag = None
+    if acwr is not None:
+        if acwr < 0.8:
+            acwr_flag = "underloading"
+        elif acwr <= 1.3:
+            acwr_flag = "optimal"
+        elif acwr <= 1.5:
+            acwr_flag = "caution — injury risk rising"
+        else:
+            acwr_flag = "danger — high injury risk, reduce load"
+
+    return {
+        "hrv_today": today_hrv,
+        "hrv_7day_mean": round(hrv_mean, 1) if hrv_mean else None,
+        "hrv_7day_std": round(hrv_std, 1) if hrv_std else None,
+        "hrv_cv_7day_pct": hrv_cv,
+        "hrv_cv_flag": hrv_cv_flag,
+        "hrv_zscore_today": hrv_zscore,
+        "rhr_today": today_rhr,
+        "rhr_7day_mean": rhr_mean,
+        "recovery_index": ri,
+        "recovery_index_flag": ri_flag,
+        "acwr": acwr,
+        "acwr_flag": acwr_flag,
+        "tss_last_7_days": round(tss_7, 1),
+        "tss_last_28_days": round(tss_28, 1),
     }
 
 
