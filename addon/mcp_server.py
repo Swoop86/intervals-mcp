@@ -492,6 +492,7 @@ if not READ_ONLY:
         name: str,
         description: str,
         sport_type: str = "Run",
+        category: str = "WORKOUT",
         moving_time: int | None = None,
         target_tss: float | None = None,
         workout_doc: dict | None = None,
@@ -499,18 +500,21 @@ if not READ_ONLY:
         """Create a planned workout on the calendar. Syncs to Garmin if connected.
 
         Args:
-            date: ISO date YYYY-MM-DD
-            name: Workout name
-            description: Full workout description with structure and targets
-            sport_type: Run, Ride, Swim, etc. (default Run)
-            moving_time: Estimated duration in seconds
-            target_tss: Target Training Stress Score
-            workout_doc: Structured workout in intervals.icu format
+            date:         ISO date YYYY-MM-DD
+            name:         Workout name
+            description:  Full workout description with structure and targets
+            sport_type:   Run, Ride, Swim, etc. (default Run)
+            category:     WORKOUT (default), RACE, NOTES, TARGET,
+                          FITNESS_DAYS, SET_FITNESS, or SET_EFTP
+            moving_time:  Estimated duration in seconds
+            target_tss:   Target Training Stress Score
+            workout_doc:  Structured workout in intervals.icu format
         """
         payload = {
             "start_date_local": date,
             "name": name,
             "type": sport_type,
+            "category": category,
             "description": description,
         }
         if moving_time is not None:
@@ -663,6 +667,8 @@ if not READ_ONLY:
             name              (required) Workout name
             type              (required) Sport: Run, Ride, Swim, VirtualRide, etc.
             description       (required) Free-text workout description
+            category          WORKOUT (default), RACE, NOTES, TARGET,
+                              FITNESS_DAYS, SET_FITNESS, SET_EFTP
             moving_time       Estimated duration in seconds
             icu_training_load Target TSS
             workout_doc       Structured workout — enables interval-by-interval targets on
@@ -706,10 +712,14 @@ if not READ_ONLY:
             workouts: List of workout objects to create on the calendar.
         """
         _PLAN_FIELDS = frozenset({
-            "start_date_local", "name", "type", "description",
+            "start_date_local", "name", "type", "category", "description",
             "moving_time", "icu_training_load", "workout_doc",
         })
-        safe = [{k: v for k, v in w.items() if k in _PLAN_FIELDS} for w in workouts]
+        safe = []
+        for w in workouts:
+            entry = {k: v for k, v in w.items() if k in _PLAN_FIELDS}
+            entry.setdefault("category", "WORKOUT")
+            safe.append(entry)
         return await icu_post(f"athlete/{ATHLETE_ID}/events/bulk", safe)
 
 

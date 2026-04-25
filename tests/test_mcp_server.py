@@ -1344,7 +1344,12 @@ class TestCreatePlanTool:
         mock_post.assert_called_once()
         call_path = mock_post.call_args[0][0]
         assert "events/bulk" in call_path
-        assert mock_post.call_args[0][1] == workouts
+        sent = mock_post.call_args[0][1]
+        assert len(sent) == len(workouts)
+        for w, s in zip(workouts, sent):
+            for k, v in w.items():
+                assert s[k] == v
+            assert s["category"] == "WORKOUT"
         assert result == post_response
 
     async def test_passes_workout_doc(self):
