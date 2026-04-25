@@ -430,7 +430,16 @@ async def get_wellness(days: int = 14) -> list[dict]:
 
 @mcp.tool()
 async def get_athlete() -> dict:
-    """Get athlete profile: FTP, LTHR, weight, sport zones."""
+    """Get athlete data from intervals.icu: FTP, LTHR, weight, and sport zones.
+
+    Returns cycling FTP, lactate threshold HR (LTHR), body weight, and per-sport
+    zone configuration stored in intervals.icu.
+
+    NOTE: Running paces (easy pace, threshold pace) are NOT stored in intervals.icu —
+    they live in the local coaching profile. Always call get_profile as well when you
+    need threshold_pace_min_per_km or easy_pace_min_per_km to write pace-based workout
+    descriptions or confirm targets with the athlete.
+    """
     return await icu_get(f"athlete/{ATHLETE_ID}")
 
 
@@ -531,8 +540,13 @@ if not READ_ONLY:
         Repeats:         Put Nx on its own line before the steps (blank line before and after)
         Sections:        Warmup / Main Set / Cooldown on their own lines
 
+        BEFORE WRITING TARGETS — call these first if not already in context:
+          get_profile  → threshold_pace_min_per_km, easy_pace_min_per_km, LTHR zone context
+          get_athlete  → LTHR (bpm), FTP (watts), sport zones from intervals.icu
+
         Use LTHR% when LTHR is available from get_athlete; fall back to Z1-Z3 HR zones
-        or absolute BPM. Use %FTP for cycling when FTP is available.
+        or absolute BPM. Use threshold_pace_min_per_km from get_profile for Pace targets.
+        Use %FTP for cycling when FTP is available.
 
         Args:
             date:         ISO date YYYY-MM-DD (time component added automatically)
@@ -735,7 +749,12 @@ if not READ_ONLY:
         Repeats:      Nx on its own line before the steps block (blank lines around it)
         Sections:     Warmup / Main Set / Cooldown as their own lines
 
+        BEFORE WRITING TARGETS — call these first if not already in context:
+          get_profile  → threshold_pace_min_per_km, easy_pace_min_per_km
+          get_athlete  → LTHR (bpm), FTP (watts)
+
         Use LTHR% when LTHR is available from get_athlete; fall back to Z1-Z3 HR zones.
+        Use threshold_pace_min_per_km from get_profile for Pace targets.
         Use %FTP for cycling when FTP is available.
 
         Args:
