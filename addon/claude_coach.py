@@ -295,13 +295,29 @@ def _clean_activity(a: dict) -> dict:
         "distance_km": round((a.get("distance", 0) or 0) / 1000, 2),
         "tss": a.get("icu_training_load"),
         "avg_hr": a.get("average_heartrate"),
+        "max_hr": a.get("max_heartrate"),
         "avg_power": a.get("average_watts"),
+        "elevation_m": a.get("total_elevation_gain"),
+        "avg_temperature_c": a.get("average_temp"),
         "ctl": a.get("icu_ctl"),
         "atl": a.get("icu_atl"),
         "tsb": a.get("icu_tsb"),
         "perceived_effort": a.get("perceived_exertion"),
+        "training_effect_aerobic": a.get("total_training_effect"),
+        "training_effect_anaerobic": a.get("total_anaerobic_training_effect"),
+        "training_effect_label": a.get("training_effect_label"),
     }
     d.update(cadence_fields)
+    # Running dynamics fields from Garmin (only present for run types)
+    if a.get("type") in _RUN_TYPES:
+        for src, dst in (
+            ("avg_vertical_oscillation", "vertical_oscillation_cm"),
+            ("avg_ground_contact_time", "ground_contact_time_ms"),
+            ("avg_stride_length", "stride_length_m"),
+            ("avg_vertical_ratio", "vertical_ratio_pct"),
+        ):
+            if a.get(src) is not None:
+                d[dst] = a[src]
     return d
 
 
@@ -320,6 +336,7 @@ def _clean_wellness(w: dict) -> dict:
         "motivation": w.get("motivation"),
         "soreness": w.get("soreness"),
         "fatigue": w.get("fatigue"),
+        "stress": w.get("stress"),
     }
 
 

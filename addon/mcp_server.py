@@ -454,6 +454,7 @@ async def get_wellness(days: int = 14) -> list[dict]:
             "motivation": w.get("motivation"),
             "soreness": w.get("soreness"),
             "fatigue": w.get("fatigue"),
+            "stress": w.get("stress"),
         }
         for w in raw
     ]
@@ -782,6 +783,15 @@ async def review_training(activity_id: str = "") -> dict:
       running_threshold_pace_min_per_km, run_lthr_bpm, run_hr_zones_bpm,
       cycling_ftp_watts, cycling_power_zones_watts, ride_lthr_bpm
     Use these for all workout targets — no need to call get_athlete separately.
+
+    Each activity in recent_activities now includes Garmin-sourced fields when available:
+      max_hr, avg_temperature_c (wrist-sensor estimate — treat as relative indicator only,
+        not an accurate ambient reading; useful for comparing sessions, not absolute values)
+      training_effect_aerobic (0–5), training_effect_anaerobic (0–5), training_effect_label
+        (Recovery/Base/Tempo/Threshold/VO2Max/Anaerobic/Sprint)
+      Running dynamics (run types only): vertical_oscillation_cm (ideal 6–8 cm),
+        ground_contact_time_ms (lower = better), stride_length_m, vertical_ratio_pct
+    Wellness entries include `stress` (Garmin stress score) when available.
 
     Also includes a pre-computed `readiness_metrics` block with:
       hrv_today, hrv_7day_mean, hrv_cv_7day_pct, hrv_cv_flag
@@ -1386,14 +1396,29 @@ def _summarise_activity(a: dict) -> dict:
         "distance_km": round((a.get("distance", 0) or 0) / 1000, 2),
         "tss": a.get("icu_training_load"),
         "avg_hr": a.get("average_heartrate"),
+        "max_hr": a.get("max_heartrate"),
         "avg_pace_per_km": a.get("icu_average_speed"),
         "avg_power": a.get("average_watts"),
         "elevation_m": a.get("total_elevation_gain"),
+        "avg_temperature_c": a.get("average_temp"),
         "ctl": a.get("icu_ctl"),
         "atl": a.get("icu_atl"),
         "tsb": a.get("icu_tsb"),
+        "training_effect_aerobic": a.get("total_training_effect"),
+        "training_effect_anaerobic": a.get("total_anaerobic_training_effect"),
+        "training_effect_label": a.get("training_effect_label"),
     }
     d.update(_cadence_fields(a))
+    # Running dynamics fields from Garmin (only present for run types)
+    if a.get("type") in _RUN_TYPES:
+        for src, dst in (
+            ("avg_vertical_oscillation", "vertical_oscillation_cm"),
+            ("avg_ground_contact_time", "ground_contact_time_ms"),
+            ("avg_stride_length", "stride_length_m"),
+            ("avg_vertical_ratio", "vertical_ratio_pct"),
+        ):
+            if a.get(src) is not None:
+                d[dst] = a[src]
     return d
 
 
