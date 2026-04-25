@@ -778,7 +778,12 @@ async def review_training(activity_id: str = "") -> dict:
     The returned context includes `preferred_units` (km or miles) and `athlete_timezone`.
     Use these for all distances, paces, and date references in your response.
 
-    The returned context includes a pre-computed `readiness_metrics` block with:
+    The returned context includes `athlete_zones` with Garmin-synced thresholds:
+      running_threshold_pace_min_per_km, run_lthr_bpm, run_hr_zones_bpm,
+      cycling_ftp_watts, cycling_power_zones_watts, ride_lthr_bpm
+    Use these for all workout targets — no need to call get_athlete separately.
+
+    Also includes a pre-computed `readiness_metrics` block with:
       hrv_today, hrv_7day_mean, hrv_cv_7day_pct, hrv_cv_flag
       hrv_zscore_today, recovery_index, recovery_index_flag
       acwr, acwr_flag, tss_last_7_days, tss_last_28_days

@@ -183,16 +183,64 @@ async def icu_delete(client: httpx.AsyncClient, path: str) -> None:
 # ---------------------------------------------------------------------------
 # Context fetching
 # ---------------------------------------------------------------------------
+def _extract_athlete_zones(athlete_data: dict) -> dict:
+    """Pull coaching-relevant zone data out of sportSettings into a flat dict."""
+    import math as _math
+
+    def ms_to_min_km(v):
+        return round(1000 / (v * 60), 2) if v and v > 0 else None
+
+    def ms_to_min_100m(v):
+        return round(100 / (v * 60), 2) if v and v > 0 else None
+
+    zones: dict = {
+        "ftp_watts": athlete_data.get("ftp"),
+        "lthr_bpm": athlete_data.get("lthr"),
+        "weight_kg": athlete_data.get("weight"),
+    }
+
+    for ss in athlete_data.get("sportSettings") or []:
+        sport = ss.get("activity_type")
+        if not sport:
+            continue
+        p = sport.lower()
+        if ss.get("lthr"):
+            zones[f"{p}_lthr_bpm"] = ss["lthr"]
+        if ss.get("max_heart_rate"):
+            zones[f"{p}_max_hr_bpm"] = ss["max_heart_rate"]
+        if ss.get("zones_heart_rate"):
+            zones[f"{p}_hr_zones_bpm"] = ss["zones_heart_rate"]
+        if sport == "Run":
+            if ss.get("threshold_pace"):
+                zones["running_threshold_pace_min_per_km"] = ms_to_min_km(ss["threshold_pace"])
+            if ss.get("pace_zones"):
+                zones["running_pace_zones_min_per_km"] = [
+                    ms_to_min_km(v) for v in ss["pace_zones"] if v
+                ]
+        elif sport == "Ride":
+            ftp = ss.get("ftp") or ss.get("threshold_power")
+            if ftp:
+                zones["cycling_ftp_watts"] = ftp
+            if ss.get("zones_power"):
+                zones["cycling_power_zones_watts"] = ss["zones_power"]
+        elif sport == "Swim":
+            if ss.get("threshold_pace"):
+                zones["swim_css_min_per_100m"] = ms_to_min_100m(ss["threshold_pace"])
+
+    return zones
+
+
 async def fetch_context(client: httpx.AsyncClient, activity_id: str) -> dict:
     athlete = f"athlete/{ATHLETE_ID}"
 
-    activities, wellness, planned = await asyncio.gather(
+    activities, wellness, planned, athlete_data = await asyncio.gather(
         icu_get(client, f"{athlete}/activities",
                 {"oldest": days_ago_iso(ACTIVITIES_DAYS), "newest": today_iso()}),
         icu_get(client, f"{athlete}/wellness",
                 {"oldest": days_ago_iso(WELLNESS_DAYS), "newest": today_iso()}),
         icu_get(client, f"{athlete}/events",
                 {"oldest": today_iso(), "newest": in_days_iso(PLANNED_DAYS)}),
+        icu_get(client, athlete),
     )
 
     activities_sorted = sorted(activities, key=lambda a: a.get("start_date_local", ""))
@@ -219,6 +267,7 @@ async def fetch_context(client: httpx.AsyncClient, activity_id: str) -> dict:
             "tsb": latest.get("icu_tsb") if latest else None,
         },
         "readiness_metrics": _compute_readiness_metrics(clean_wellness, clean_activities),
+        "athlete_zones": _extract_athlete_zones(athlete_data),
     }
 
 
