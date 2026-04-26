@@ -1566,6 +1566,75 @@ class TestCreatePlanTool:
 
 
 # ---------------------------------------------------------------------------
+# update_sport_settings
+# ---------------------------------------------------------------------------
+
+class TestUpdateSportSettings:
+    async def test_updates_threshold_pace_only(self):
+        import mcp_server
+        with patch.object(mcp_server, "icu_put", new=AsyncMock(return_value={"threshold_pace": 3.33})) as mock_put:
+            from mcp_server import update_sport_settings
+            result = await update_sport_settings("Run", threshold_pace_min_per_km=5.0)
+        mock_put.assert_called_once()
+        path, payload = mock_put.call_args[0]
+        assert "sport-settings/Run" in path
+        # 5.0 min/km → 1000/(5.0*60) = 3.333333 m/s
+        assert abs(payload["threshold_pace"] - 3.333333) < 1e-4
+        assert "lthr" not in payload
+
+    async def test_updates_lthr_only_with_recalc(self):
+        import mcp_server
+        with patch.object(mcp_server, "icu_put", new=AsyncMock(return_value={"lthr": 168})) as mock_put:
+            from mcp_server import update_sport_settings
+            result = await update_sport_settings("Run", lthr_bpm=168)
+        mock_put.assert_called_once()
+        _, payload = mock_put.call_args[0]
+        kw = mock_put.call_args[1]
+        assert payload["lthr"] == 168
+        assert "threshold_pace" not in payload
+        assert kw.get("params") == {"recalcHrZones": "true"}
+
+    async def test_updates_both_fields(self):
+        import mcp_server
+        with patch.object(mcp_server, "icu_put", new=AsyncMock(return_value={})) as mock_put:
+            from mcp_server import update_sport_settings
+            await update_sport_settings("Run", threshold_pace_min_per_km=4.87, lthr_bpm=170)
+        _, payload = mock_put.call_args[0]
+        assert "threshold_pace" in payload
+        assert payload["lthr"] == 170
+
+    async def test_no_recalc_when_disabled(self):
+        import mcp_server
+        with patch.object(mcp_server, "icu_put", new=AsyncMock(return_value={})) as mock_put:
+            from mcp_server import update_sport_settings
+            await update_sport_settings("Run", lthr_bpm=165, recalc_hr_zones=False)
+        kw = mock_put.call_args[1]
+        assert kw.get("params") is None
+
+    async def test_no_recalc_when_only_pace_provided(self):
+        import mcp_server
+        with patch.object(mcp_server, "icu_put", new=AsyncMock(return_value={})) as mock_put:
+            from mcp_server import update_sport_settings
+            await update_sport_settings("Run", threshold_pace_min_per_km=5.0)
+        kw = mock_put.call_args[1]
+        assert kw.get("params") is None
+
+    async def test_returns_error_when_no_params(self):
+        from mcp_server import update_sport_settings
+        result = await update_sport_settings("Run")
+        assert "error" in result
+
+    async def test_pace_conversion_accuracy(self):
+        """4:52/km = 4.8667 min/km → 1000/(4.8667*60) = 3.4247 m/s"""
+        import mcp_server
+        with patch.object(mcp_server, "icu_put", new=AsyncMock(return_value={})) as mock_put:
+            from mcp_server import update_sport_settings
+            await update_sport_settings("Run", threshold_pace_min_per_km=4.8667)
+        _, payload = mock_put.call_args[0]
+        assert abs(payload["threshold_pace"] - 3.4247) < 0.001
+
+
+# ---------------------------------------------------------------------------
 # /.well-known/oauth-protected-resource/mcp path alias
 # ---------------------------------------------------------------------------
 

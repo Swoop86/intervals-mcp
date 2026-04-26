@@ -338,8 +338,8 @@ async def icu_post(path: str, payload: Any) -> Any:
     return r.json()
 
 
-async def icu_put(path: str, payload: Any) -> Any:
-    r = await http().put(f"{BASE_URL}/{path}", auth=_icu_auth(), json=payload)
+async def icu_put(path: str, payload: Any, params: dict | None = None) -> Any:
+    r = await http().put(f"{BASE_URL}/{path}", auth=_icu_auth(), json=payload, params=params)
     _icu_raise(r)
     return r.json()
 
@@ -473,6 +473,21 @@ def _ms_to_min_per_100m(speed_ms: float) -> float | None:
     if not speed_ms or speed_ms <= 0:
         return None
     return round(100 / (speed_ms * 60), 2)
+
+
+def _min_km_to_ms(min_per_km: float) -> float:
+    """Convert min/km to m/s for the sport-settings API."""
+    return round(1000 / (min_per_km * 60), 6)
+
+
+def _format_pace(min_per_km: float) -> str:
+    """Format decimal min/km as mm:ss/km string (e.g. 5.555 → '5:33/km')."""
+    minutes = int(min_per_km)
+    seconds = round((min_per_km - minutes) * 60)
+    if seconds == 60:
+        minutes += 1
+        seconds = 0
+    return f"{minutes}:{seconds:02d}/km"
 
 
 def _extract_sport_zones(data: dict) -> None:
@@ -637,70 +652,92 @@ if not READ_ONLY:
         DESCRIPTION SYNTAX — always use this structured format.
         intervals.icu parses it and creates step-by-step Garmin guidance.
 
-        RUNNING WORKOUT TYPES AND THEIR TARGETS
+        BEFORE WRITING ANY TARGETS — call get_athlete first (required)
         ─────────────────────────────────────────
-        Easy / Recovery run  (Z1-Z2, RPE 2-3, conversational):
-            Warmup\\n- 5m Z1 HR\\n\\nMain Set\\n- 40m Z2 HR\\n\\nCooldown\\n- 5m Z1 HR
-            Or with LTHR%: Main Set\\n- 45m 65-75% LTHR
+        get_athlete → running_threshold_pace_min_per_km, run_lthr_bpm
+        get_profile → fallback if get_athlete returns nothing
 
-        Long run  (aerobic, same zones as easy but longer):
-            Main Set\\n- 90m 65-75% LTHR
-
-        Aerobic with strides  (easy run + short accelerations at the end):
-            Main Set\\n- 35m Z2 HR\\n\\nStrides 4x\\n- 20s 110% Pace\\n- 90s Z1 HR
-
-        Tempo run  (sustained "comfortably hard", 20-40min, ~85-92% LTHR, RPE 6-7):
-            Warmup\\n- 15m 70-75% LTHR\\n\\nMain Set\\n- 25m 85-92% LTHR\\n\\nCooldown\\n- 10m 70% LTHR
-            Or with pace: Main Set\\n- 25m 85-90% Pace
-
-        Threshold / Cruise intervals  (at threshold pace, short recovery, RPE 7-8):
-            Warmup\\n- 15m Z2 Pace\\n\\nMain Set 4x\\n- 8m 90-95% Pace\\n- 90s Z1 HR\\n\\nCooldown\\n- 10m Z2 Pace
-
-        VO2max intervals  (short, hard, near-maximal, RPE 9):
-            Warmup\\n- 15m Z2 Pace\\n\\nMain Set 6x\\n- 3m 105-110% Pace\\n- 3m 60% Pace\\n\\nCooldown\\n- 10m Z2 Pace
-
-        Marathon-pace run  (goal race effort embedded in long run):
-            Warmup\\n- 20m 70% LTHR\\n\\nAerobic\\n- 40m 75-80% LTHR\\n\\nMarathon Pace\\n- 20m 80-85% Pace\\n\\nCooldown\\n- 10m 70% LTHR
-
-        Hill repeats  (strength/power, by time):
-            Warmup\\n- 15m Z2 HR\\n\\nMain Set 8x\\n- 60s Z4-Z5 HR\\n- 90s Z1 HR walk\\n\\nCooldown\\n- 10m Z2 HR
-
-        TARGET PERCENTAGE GUIDE
+        COMPUTING PACE TARGETS (quality sessions: tempo, threshold, VO2max, strides)
         ─────────────────────────────────────────
-        % Pace (= % of threshold pace, 100% = threshold):
-          Recovery   60-70% | Easy  70-80% | Tempo  85-90% | Threshold  95-100%
-          VO2max 105-110% | Speed/rep 115-120%
+        ALWAYS use absolute pace — "% Pace" or "Z2 Pace" silently produces "run until
+        press lap" on Garmin when pace zones are not fully configured.
 
-        % LTHR (= % of lactate threshold HR):
-          Recovery  <70% | Easy  70-80% | Tempo  82-90% | Threshold  90-95%
-          VO2max  >95%
+        Formula: step_pace_min_km = threshold_pace_min_km × (100 / target_pct)
+        Convert to mm:ss: minutes = int(v), seconds = round((v % 1) × 60)
 
-        HR zones: Z1 HR / Z2 HR / Z3 HR / Z4 HR / Z5 HR  (or Z2-Z3 HR for a range)
+        Effort targets and multipliers (apply to running_threshold_pace_min_per_km):
+          Strides / rep     115–120%  → multiply by 0.833–0.870  (fastest)
+          VO2max            105–110%  → multiply by 0.909–0.952
+          Threshold          93–97%  → multiply by 1.031–1.075
+          Tempo              85–90%  → multiply by 1.111–1.176
+          Marathon pace      78–82%  → multiply by 1.220–1.282
+          Easy / aerobic     70–78%  → multiply by 1.282–1.429  (slowest)
+
+        Write as a ±3–4% range, fast end first:
+          e.g. threshold=5:00/km (5.0), tempo 85–90%:
+            fast: 5.0 × 100/90 = 5.555 → 5:33/km
+            slow: 5.0 × 100/85 = 5.882 → 5:53/km  →  "5:33-5:53/km Pace"
+
+        COMPUTING HR TARGETS (easy runs, warmup, cooldown, recovery intervals)
+        ─────────────────────────────────────────
+        Use "% LTHR" — intervals.icu resolves it to absolute BPM using the stored
+        LTHR. Do NOT use Z1–Z5 HR (Garmin's zone numbers may not match intervals.icu).
+
+          Recovery / rest interval   65–72% LTHR
+          Easy / aerobic             72–80% LTHR
+          Steady / upper aerobic     80–87% LTHR   (use for warmup before quality)
+          Threshold / hard           90–95% LTHR
+
+        Fallback only: use Z1–Z5 HR if run_lthr_bpm is unavailable.
+
+        ONE TARGET PER STEP — pace OR % LTHR, never both on the same line.
+          Quality steps (tempo/threshold/VO2max/strides) → absolute pace
+          All other steps (easy, warmup, cooldown, recovery) → % LTHR
+
+        RUNNING WORKOUT TYPES
+        ─────────────────────────────────────────
+        Examples use threshold=5:00/km, LTHR=165bpm. Recompute for actual athlete.
+
+        Easy / Recovery  (RPE 2–3):
+            Warmup\\n- 5m 65-72% LTHR\\n\\nMain Set\\n- 40m 72-80% LTHR\\n\\nCooldown\\n- 5m 65-72% LTHR
+
+        Long run  (RPE 3–4, same HR as easy):
+            Main Set\\n- 90m 72-80% LTHR
+
+        Aerobic with strides:
+            Main Set\\n- 35m 72-80% LTHR\\n\\nStrides 4x\\n- 20s 4:10-4:22/km Pace\\n- 90s 65-72% LTHR
+
+        Tempo run  (comfortably hard, 20–40min, RPE 6–7):
+            Warmup\\n- 15m 72-80% LTHR\\n\\nMain Set\\n- 25m 5:33-5:53/km Pace\\n\\nCooldown\\n- 10m 72-78% LTHR
+
+        Threshold / Cruise intervals  (RPE 7–8):
+            Warmup\\n- 15m 72-80% LTHR\\n\\nMain Set 4x\\n- 8m 5:09-5:22/km Pace\\n- 90s 65-72% LTHR\\n\\nCooldown\\n- 10m 72-80% LTHR
+
+        VO2max intervals  (near-maximal, RPE 9):
+            Warmup\\n- 15m 72-80% LTHR\\n\\nMain Set 6x\\n- 3m 4:33-4:46/km Pace\\n- 3m 65-72% LTHR\\n\\nCooldown\\n- 10m 72-80% LTHR
+
+        Marathon-pace run:
+            Warmup\\n- 20m 72-78% LTHR\\n\\nAerobic\\n- 40m 72-80% LTHR\\n\\nMarathon Pace\\n- 20m 6:06-6:25/km Pace\\n\\nCooldown\\n- 10m 72-78% LTHR
+
+        Hill repeats  (power/strength):
+            Warmup\\n- 15m 72-80% LTHR\\n\\nMain Set 8x\\n- 60s 4:21-4:46/km Pace\\n- 90s 65-72% LTHR walk\\n\\nCooldown\\n- 10m 72-80% LTHR
 
         METHODOLOGY NOTES
         ─────────────────────────────────────────
-        Polarized: use Easy OR VO2max intervals — skip Tempo/Threshold blocks
-        Maffetone: only Easy at <MAF HR (180-age), no intensity until base is solid
-        Norwegian:  two Threshold/Cruise interval sessions/week, everything else Easy
+        Polarized: Easy (72–80% LTHR) OR VO2max pace — skip Tempo/Threshold
+        Maffetone: Easy at <MAF pace (MAF HR = 180−age), no intensity until base solid
+        Norwegian:  two Threshold/Cruise sessions/week, everything else Easy
         Pyramidal:  Easy + Tempo + limited VO2max (traditional mix)
-        Jack Daniels: use % Pace targets from VDOT (E=70%, M=78%, T=88%, I=98%, R=110%)
+        Jack Daniels: E=70%, M=78%, T=88%, I=98%, R=110% (multiply threshold pace)
 
         SYNTAX REFERENCE
         ─────────────────────────────────────────
-        Pace syntax:     Z2 Pace / 75% Pace / 5:00/km Pace / 4:45-5:00/km Pace
-        HR syntax:       Z2 HR / 70-80% LTHR / 140bpm
-        Power syntax:    Z2 / 75% / 220w / ramp 55-75%  (% = %FTP, cycling)
+        Pace syntax:     4:45/km Pace / 4:45-5:05/km Pace   (always absolute for runs)
+        HR syntax:       72-80% LTHR / 65-72% LTHR           (always % LTHR for runs)
+        Power syntax:    Z2 / 75% / 220w / ramp 55-75%       (% = %FTP, cycling)
         Duration syntax: 10m / 1h / 30s / 1h30m / 500mtr / 2km  (mtr not m for metres)
         Repeats:         Nx on its own line before the steps (blank lines around block)
         Sections:        Warmup / Main Set / Cooldown on their own lines
-
-        BEFORE WRITING TARGETS — call these first if not already in context:
-          get_athlete  → running_threshold_pace_min_per_km (synced from Garmin), LTHR, FTP
-          get_profile  → fallback threshold_pace_min_per_km if get_athlete has none
-
-        Prefer running_threshold_pace_min_per_km from get_athlete (Garmin-synced) over
-        the profile value. Use LTHR% when LTHR is available; fall back to Z1-Z3 HR zones
-        or absolute BPM. Use %FTP for cycling when FTP is available.
 
         Args:
             date:         ISO date YYYY-MM-DD (time component added automatically)
@@ -836,6 +873,20 @@ async def review_training(activity_id: str = "") -> dict:
 
     7. Current training phase (Base/Build/Peak/Taper) and plan adjustments
 
+    8. Threshold drift check (check when reviewing hard/race activities)
+       Each hard or race activity may include:
+         lthr_detected_bpm           — Garmin-detected LTHR for that effort
+         lt_pace_detected_min_per_km — Garmin-detected threshold pace
+       Compare against athlete_zones.run_lthr_bpm and
+       athlete_zones.running_threshold_pace_min_per_km.
+
+       Suggest calling update_sport_settings when:
+         - lthr_detected_bpm differs from stored LTHR by ≥3 bpm across ≥2 sessions
+         - lt_pace_detected_min_per_km differs from stored threshold pace by ≥0:10/km
+           across ≥2 sessions
+         - After a race or structured time trial that serves as a threshold benchmark
+       Always confirm with the athlete before updating.
+
     IMPORTANT: Use compound patterns — do not recommend rest based on a single
     metric spike. Require multiple signals before major load changes.
 
@@ -930,38 +981,76 @@ if not READ_ONLY:
             distance_km       Target distance in kilometres — converted to metres automatically
             icu_training_load Target TSS
 
+        BEFORE WRITING ANY TARGETS — call get_athlete first (required)
+        ─────────────────────────────────────────
+        get_athlete → running_threshold_pace_min_per_km, run_lthr_bpm
+        get_profile → fallback if get_athlete returns nothing
+
+        COMPUTING PACE TARGETS (quality sessions: tempo, threshold, VO2max, strides)
+        ─────────────────────────────────────────
+        ALWAYS use absolute pace — "% Pace" or "Z2 Pace" silently produces "run until
+        press lap" on Garmin when pace zones are not fully configured.
+
+        Formula: step_pace_min_km = threshold_pace_min_km × (100 / target_pct)
+        Convert to mm:ss: minutes = int(v), seconds = round((v % 1) × 60)
+
+        Effort targets and multipliers (apply to running_threshold_pace_min_per_km):
+          Strides / rep     115–120%  → multiply by 0.833–0.870  (fastest)
+          VO2max            105–110%  → multiply by 0.909–0.952
+          Threshold          93–97%  → multiply by 1.031–1.075
+          Tempo              85–90%  → multiply by 1.111–1.176
+          Marathon pace      78–82%  → multiply by 1.220–1.282
+          Easy / aerobic     70–78%  → multiply by 1.282–1.429  (slowest)
+
+        Write as a ±3–4% range, fast end first:
+          e.g. threshold=5:00/km (5.0), tempo 85–90%:
+            fast: 5.0 × 100/90 = 5.555 → 5:33/km
+            slow: 5.0 × 100/85 = 5.882 → 5:53/km  →  "5:33-5:53/km Pace"
+
+        COMPUTING HR TARGETS (easy runs, warmup, cooldown, recovery intervals)
+        ─────────────────────────────────────────
+        Use "% LTHR" — DO NOT use Z1–Z5 HR (Garmin's zone numbers may not match).
+
+          Recovery / rest interval   65–72% LTHR
+          Easy / aerobic             72–80% LTHR
+          Steady / upper aerobic     80–87% LTHR   (use for warmup before quality)
+          Threshold / hard           90–95% LTHR
+
+        Fallback only: use Z1–Z5 HR if run_lthr_bpm is unavailable.
+
+        ONE TARGET PER STEP — pace OR % LTHR, never both on the same line.
+          Quality steps (tempo/threshold/VO2max/strides) → absolute pace
+          All other steps (easy, warmup, cooldown, recovery) → % LTHR
+
         RUNNING WORKOUT TYPES AND DESCRIPTION SYNTAX
-        ─────────��───────────────────────────────
-        Easy/Recovery:   "Warmup\\n- 5m Z1 HR\\n\\nMain Set\\n- 40m Z2 HR\\n\\nCooldown\\n- 5m Z1 HR"
-        Long run:        "Main Set\\n- 90m 65-75% LTHR"
-        Strides:         "Main Set\\n- 35m Z2 HR\\n\\nStrides 4x\\n- 20s 110% Pace\\n- 90s Z1 HR"
-        Tempo run:       "Warmup\\n- 15m Z2 Pace\\n\\nMain Set\\n- 25m 85-90% Pace\\n\\nCooldown\\n- 10m Z2 Pace"
-        Threshold/Cruise:"Warmup\\n- 15m Z2 Pace\\n\\nMain Set 4x\\n- 8m 90-95% Pace\\n- 90s Z1 HR\\n\\nCooldown\\n- 10m Z2 Pace"
-        VO2max:          "Warmup\\n- 15m Z2 Pace\\n\\nMain Set 6x\\n- 3m 105-110% Pace\\n- 3m 60% Pace\\n\\nCooldown\\n- 10m Z2 Pace"
-        Hill repeats:    "Warmup\\n- 15m Z2 HR\\n\\nMain Set 8x\\n- 60s Z4-Z5 HR\\n- 90s Z1 HR walk\\n\\nCooldown\\n- 10m Z2 HR"
-        Marathon pace:   "Warmup\\n- 20m 70% LTHR\\n\\nAerobic\\n- 40m 75-80% LTHR\\n\\nMarathon Pace\\n- 20m 80-85% Pace\\n\\nCooldown\\n- 10m 70% LTHR"
+        ─────────────────────────────────────────
+        Examples use threshold=5:00/km. Recompute for actual athlete.
 
-        % Pace guide (100% = threshold pace):
-          Recovery 60-70% | Easy 70-80% | Tempo 85-90% | Threshold 90-95% | VO2max 105-110%
+        Easy/Recovery:   "Warmup\\n- 5m 65-72% LTHR\\n\\nMain Set\\n- 40m 72-80% LTHR\\n\\nCooldown\\n- 5m 65-72% LTHR"
+        Long run:        "Main Set\\n- 90m 72-80% LTHR"
+        Strides:         "Main Set\\n- 35m 72-80% LTHR\\n\\nStrides 4x\\n- 20s 4:10-4:22/km Pace\\n- 90s 65-72% LTHR"
+        Tempo run:       "Warmup\\n- 15m 72-80% LTHR\\n\\nMain Set\\n- 25m 5:33-5:53/km Pace\\n\\nCooldown\\n- 10m 72-78% LTHR"
+        Threshold/Cruise:"Warmup\\n- 15m 72-80% LTHR\\n\\nMain Set 4x\\n- 8m 5:09-5:22/km Pace\\n- 90s 65-72% LTHR\\n\\nCooldown\\n- 10m 72-80% LTHR"
+        VO2max:          "Warmup\\n- 15m 72-80% LTHR\\n\\nMain Set 6x\\n- 3m 4:33-4:46/km Pace\\n- 3m 65-72% LTHR\\n\\nCooldown\\n- 10m 72-80% LTHR"
+        Hill repeats:    "Warmup\\n- 15m 72-80% LTHR\\n\\nMain Set 8x\\n- 60s 4:21-4:46/km Pace\\n- 90s 65-72% LTHR walk\\n\\nCooldown\\n- 10m 72-80% LTHR"
+        Marathon pace:   "Warmup\\n- 20m 72-78% LTHR\\n\\nAerobic\\n- 40m 72-80% LTHR\\n\\nMarathon Pace\\n- 20m 6:06-6:25/km Pace\\n\\nCooldown\\n- 10m 72-78% LTHR"
 
-        % LTHR guide:
-          Recovery <70% | Easy 70-80% | Tempo 82-90% | Threshold 90-95% | VO2max >95%
+        METHODOLOGY NOTES
+        ─────────────────────────────────────────
+        Polarized: Easy (72–80% LTHR) OR VO2max pace — skip Tempo/Threshold
+        Maffetone: Easy at <MAF pace (MAF HR = 180−age), no intensity until base solid
+        Norwegian:  two Threshold/Cruise sessions/week, everything else Easy
+        Pyramidal:  Easy + Tempo + limited VO2max (traditional mix)
+        Jack Daniels: E=70%, M=78%, T=88%, I=98%, R=110% (multiply threshold pace)
 
-        Methodology: Polarized → Easy or VO2max only, skip Tempo/Threshold
-                     Norwegian → Threshold intervals twice/week, everything else Easy
-                     Maffetone → Easy at <MAF HR (180-age) only
-                     Jack Daniels → use %Pace: E=70% M=78% T=88% I=98% R=110%
-
-        HR syntax:    Z1-Z5 HR / 70-80% LTHR / 140bpm
-        Pace syntax:  Z2 Pace / 75% Pace / 5:00/km Pace / 4:45-5:00/km Pace
-        Power syntax: Z2 / 75% / ramp 55-75%  (% = %FTP, cycling)
-        Duration:     10m / 1h30m / 500mtr / 2km  (mtr not m for metres)
-        Repeats:      Nx on its own line before the steps block (blank lines around it)
-        Sections:     Warmup / Main Set / Cooldown as their own lines
-
-        BEFORE WRITING TARGETS:
-          get_athlete  → running_threshold_pace_min_per_km (Garmin-synced), run_lthr_bpm
-          get_profile  → fallback threshold_pace_min_per_km if get_athlete has none
+        SYNTAX REFERENCE
+        ─────────────────────────────────────────
+        Pace syntax:     4:45/km Pace / 4:45-5:05/km Pace   (always absolute for runs)
+        HR syntax:       72-80% LTHR / 65-72% LTHR           (always % LTHR for runs)
+        Power syntax:    Z2 / 75% / 220w / ramp 55-75%       (% = %FTP, cycling)
+        Duration syntax: 10m / 1h / 30s / 1h30m / 500mtr / 2km  (mtr not m for metres)
+        Repeats:         Nx on its own line before the steps (blank lines around block)
+        Sections:        Warmup / Main Set / Cooldown on their own lines
 
         Args:
             workouts: List of workout objects to create on the calendar.
@@ -980,6 +1069,53 @@ if not READ_ONLY:
                 entry["start_date_local"] = _normalise_date(entry["start_date_local"])
             safe.append(entry)
         return await icu_post(f"athlete/{ATHLETE_ID}/events/bulk", safe)
+
+
+if not READ_ONLY:
+    @mcp.tool()
+    async def update_sport_settings(
+        sport: str,
+        threshold_pace_min_per_km: float | None = None,
+        lthr_bpm: int | None = None,
+        recalc_hr_zones: bool = True,
+    ) -> dict:
+        """Update threshold pace and/or LTHR for a sport in intervals.icu.
+
+        Call this when detected thresholds (lthr_detected_bpm, lt_pace_detected_min_per_km
+        from recent hard/race activities) suggest the stored values are out of date.
+        Updated thresholds are synced to Garmin automatically and will be used for all
+        future workout pace/HR targets.
+
+        Use coaching judgement before updating:
+        - Require ≥1 confirmed hard effort (race, time trial, or structured threshold test)
+          showing a consistent result — do not update from a single training run
+        - Detected LTHR from Garmin is reliable; detected pace is more variable (wind,
+          course profile, fatigue). Average 2–3 data points when possible.
+        - Always confirm with the athlete before writing ("your recent 10 km showed a
+          threshold pace of 4:52/km — shall I update your settings?")
+
+        When to update thresholds:
+        - lthr_detected_bpm differs from run_lthr_bpm by ≥3 bpm across ≥2 sessions
+        - lt_pace_detected_min_per_km differs from running_threshold_pace_min_per_km
+          by ≥0:10/km across ≥2 sessions
+        - After a race or time trial that serves as a threshold benchmark
+
+        Args:
+            sport:                     Sport key e.g. "Run", "Ride", "Swim"
+            threshold_pace_min_per_km: New threshold pace in min/km (e.g. 4.87 for 4:52/km).
+                                       Converted to m/s internally.
+            lthr_bpm:                  New lactate threshold heart rate in bpm.
+            recalc_hr_zones:           Recalculate HR zones from new LTHR (default True).
+        """
+        if threshold_pace_min_per_km is None and lthr_bpm is None:
+            return {"error": "Provide at least one of threshold_pace_min_per_km or lthr_bpm"}
+        payload: dict = {}
+        if threshold_pace_min_per_km is not None:
+            payload["threshold_pace"] = _min_km_to_ms(threshold_pace_min_per_km)
+        if lthr_bpm is not None:
+            payload["lthr"] = lthr_bpm
+        params = {"recalcHrZones": "true"} if (lthr_bpm is not None and recalc_hr_zones) else None
+        return await icu_put(f"athlete/{ATHLETE_ID}/sport-settings/{sport}", payload, params=params)
 
 
 @mcp.tool()
@@ -1408,6 +1544,9 @@ def _summarise_activity(a: dict) -> dict:
         "training_effect_aerobic": a.get("total_training_effect"),
         "training_effect_anaerobic": a.get("total_anaerobic_training_effect"),
         "training_effect_label": a.get("training_effect_label"),
+        # Garmin's per-activity threshold estimates (present on hard/race efforts)
+        "lthr_detected_bpm": a.get("lthr_detected"),
+        "lt_pace_detected_min_per_km": _ms_to_min_per_km(a["lt_pace_detected"]) if a.get("lt_pace_detected") else None,
     }
     d.update(_cadence_fields(a))
     # Running dynamics fields from Garmin (only present for run types)

@@ -274,6 +274,12 @@ async def fetch_context(client: httpx.AsyncClient, activity_id: str) -> dict:
 _RUN_TYPES = frozenset({"Run", "VirtualRun", "TrailRun", "Treadmill"})
 
 
+def _ms_to_min_per_km(ms: float | None) -> float | None:
+    if not ms:
+        return None
+    return round(1000 / (ms * 60), 3)
+
+
 def _clean_activity(a: dict) -> dict:
     cadence = a.get("average_cadence")
     if cadence is not None and a.get("type") in _RUN_TYPES:
@@ -308,7 +314,7 @@ def _clean_activity(a: dict) -> dict:
         "training_effect_label": a.get("training_effect_label"),
     }
     d.update(cadence_fields)
-    # Running dynamics fields from Garmin (only present for run types)
+    # Running dynamics and detected thresholds from Garmin (run types only)
     if a.get("type") in _RUN_TYPES:
         for src, dst in (
             ("avg_vertical_oscillation", "vertical_oscillation_cm"),
@@ -318,6 +324,10 @@ def _clean_activity(a: dict) -> dict:
         ):
             if a.get(src) is not None:
                 d[dst] = a[src]
+        if a.get("lthr_detected") is not None:
+            d["lthr_detected_bpm"] = a["lthr_detected"]
+        if a.get("lt_pace_detected") is not None:
+            d["lt_pace_detected_min_per_km"] = _ms_to_min_per_km(a["lt_pace_detected"])
     return d
 
 
