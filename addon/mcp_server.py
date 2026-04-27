@@ -654,13 +654,19 @@ if not READ_ONLY:
 
         BEFORE WRITING ANY TARGETS — call get_athlete first (required)
         ─────────────────────────────────────────
-        get_athlete → running_threshold_pace_min_per_km, run_lthr_bpm
+        get_athlete → running_threshold_pace_min_per_km, run_lthr_bpm,
+                      running_pace_zones_min_per_km (athlete's configured zones, if set)
         get_profile → fallback if get_athlete returns nothing
 
         COMPUTING PACE TARGETS (quality sessions: tempo, threshold, VO2max, strides)
         ─────────────────────────────────────────
         ALWAYS use absolute pace — "% Pace" or "Z2 Pace" silently produces "run until
         press lap" on Garmin when pace zones are not fully configured.
+
+        If get_athlete returns running_pace_zones_min_per_km, use those boundaries
+        directly — they reflect what the athlete has configured or Garmin has synced,
+        so targets derived from them will match both systems exactly.
+        Otherwise compute from threshold using the multiplier table below.
 
         Formula: step_pace_min_km = threshold_pace_min_km × (100 / target_pct)
         Convert to mm:ss: minutes = int(v), seconds = round((v % 1) × 60)
@@ -983,13 +989,19 @@ if not READ_ONLY:
 
         BEFORE WRITING ANY TARGETS — call get_athlete first (required)
         ─────────────────────────────────────────
-        get_athlete → running_threshold_pace_min_per_km, run_lthr_bpm
+        get_athlete → running_threshold_pace_min_per_km, run_lthr_bpm,
+                      running_pace_zones_min_per_km (athlete's configured zones, if set)
         get_profile → fallback if get_athlete returns nothing
 
         COMPUTING PACE TARGETS (quality sessions: tempo, threshold, VO2max, strides)
         ─────────────────────────────────────────
         ALWAYS use absolute pace — "% Pace" or "Z2 Pace" silently produces "run until
         press lap" on Garmin when pace zones are not fully configured.
+
+        If get_athlete returns running_pace_zones_min_per_km, use those boundaries
+        directly — they reflect what the athlete has configured or Garmin has synced,
+        so targets derived from them will match both systems exactly.
+        Otherwise compute from threshold using the multiplier table below.
 
         Formula: step_pace_min_km = threshold_pace_min_km × (100 / target_pct)
         Convert to mm:ss: minutes = int(v), seconds = round((v % 1) × 60)
@@ -1130,51 +1142,79 @@ if not READ_ONLY:
         return await icu_put(f"athlete/{ATHLETE_ID}/sport-settings/{sport}", payload, params=params)
 
     @mcp.tool()
-    async def setup_run_pace_zones(threshold_pace_min_per_km: float | None = None) -> dict:
-        """Compute and write standard running pace zones to intervals.icu from threshold pace.
+    async def setup_run_pace_zones(
+        threshold_pace_min_per_km: float | None = None,
+        force: bool = False,
+    ) -> dict:
+        """Read or write running pace zones in intervals.icu.
 
-        Zones are computed as percentages of threshold SPEED (not pace), which is the
-        standard convention matching intervals.icu's zone model:
+        DEFAULT BEHAVIOUR (force=False) — read-only:
+          Always fetches the current pace zones and threshold from intervals.icu first.
+          If zones are already configured, returns them WITHOUT writing anything.
+          Use this to inspect what is currently set before deciding to change anything.
 
-          Z1 Recovery     < 75% threshold speed   (easy jogging)
-          Z2 Endurance   75–85% threshold speed   (aerobic base)
-          Z3 Tempo       85–93% threshold speed   (comfortably hard)
+        WRITE BEHAVIOUR (force=True):
+          Computes new zone boundaries from the given (or stored) threshold pace and
+          writes them. Only do this when the athlete explicitly asks to reset zones, or
+          when no zones exist yet. Never call with force=True speculatively.
+
+        Computed zones use Garmin's 5-zone model extended with a 6th anaerobic zone,
+        as percentages of threshold SPEED:
+
+          Z1 Recovery     < 78% threshold speed   (easy jogging)
+          Z2 Endurance   78–86% threshold speed   (aerobic base)
+          Z3 Tempo       86–93% threshold speed   (comfortably hard)
           Z4 Threshold   93–100% threshold speed  (lactate threshold)
           Z5 VO2max     100–108% threshold speed  (near-maximal)
           Z6 Anaerobic  108–115% threshold speed  (sprint/max effort)
 
-        Once zones are set, the workout visualization in intervals.icu will show colored
-        bars for pace-based steps, and "% Pace" syntax becomes available in workout
-        descriptions as an alternative to absolute pace values.
-
-        Reads threshold_pace from get_athlete (running_threshold_pace_min_per_km) if not
-        provided. Always confirm the computed zones with the athlete before writing.
+        Z1–Z4 match Garmin's auto-calculated zone boundaries exactly, so intervals.icu
+        and Garmin zone analysis will agree. Z5/Z6 split the above-threshold range.
 
         Args:
-            threshold_pace_min_per_km: Threshold pace in min/km. If omitted, reads from
-                                       the stored running_threshold_pace_min_per_km.
+            threshold_pace_min_per_km: Threshold pace for zone computation (force=True only).
+                                       If omitted, reads from stored running_threshold_pace.
+            force:                     Set True to overwrite existing zones. Default False
+                                       (read-only — inspect before changing).
         """
-        if threshold_pace_min_per_km is None:
-            athlete = await icu_get(f"athlete/{ATHLETE_ID}")
-            sport_settings = athlete.get("sportSettings") or []
-            for ss in sport_settings:
-                if ss.get("activity_type") == "Run" and ss.get("threshold_pace"):
-                    threshold_pace_min_per_km = _ms_to_min_per_km(ss["threshold_pace"])
-                    break
-        if not threshold_pace_min_per_km:
+        athlete = await icu_get(f"athlete/{ATHLETE_ID}")
+        sport_settings = athlete.get("sportSettings") or []
+
+        existing_zones: list[float] = []
+        stored_threshold: float | None = None
+        for ss in sport_settings:
+            if ss.get("activity_type") == "Run":
+                if ss.get("threshold_pace"):
+                    stored_threshold = _ms_to_min_per_km(ss["threshold_pace"])
+                if ss.get("pace_zones"):
+                    existing_zones = [_ms_to_min_per_km(v) for v in ss["pace_zones"] if v]
+                break
+
+        if existing_zones and not force:
+            return {
+                "status": "already_configured",
+                "message": "Pace zones are already set in intervals.icu. Pass force=True to overwrite.",
+                "threshold_pace": _format_pace(stored_threshold) if stored_threshold else None,
+                "current_zones": {
+                    f"Z{i+1}": {"upper_boundary": _format_pace(z)} if z else None
+                    for i, z in enumerate(existing_zones)
+                },
+            }
+
+        threshold = threshold_pace_min_per_km or stored_threshold
+        if not threshold:
             return {"error": "No threshold pace available. Pass threshold_pace_min_per_km or set it via update_sport_settings first."}
 
-        t_ms = _min_km_to_ms(threshold_pace_min_per_km)
-        zone_pcts = [0.75, 0.85, 0.93, 1.00, 1.08, 1.15]
+        t_ms = _min_km_to_ms(threshold)
+        zone_pcts = [0.78, 0.86, 0.93, 1.00, 1.08, 1.15]
         zone_ms   = [round(pct * t_ms, 6) for pct in zone_pcts]
         zone_paces = [_ms_to_min_per_km(z) for z in zone_ms]
 
-        payload = {"pace_zones": zone_ms}
-        result = await icu_put(f"athlete/{ATHLETE_ID}/sport-settings/Run", payload)
+        result = await icu_put(f"athlete/{ATHLETE_ID}/sport-settings/Run", {"pace_zones": zone_ms})
 
         return {
-            "status": "ok",
-            "threshold_pace": _format_pace(threshold_pace_min_per_km),
+            "status": "written",
+            "threshold_pace": _format_pace(threshold),
             "zones_written": {
                 f"Z{i+1}": {"upper_boundary": _format_pace(zone_paces[i]), "pct_threshold": int(zone_pcts[i]*100)}
                 for i in range(6)

@@ -99,34 +99,87 @@ class TestGetBestEfforts:
 # setup_run_pace_zones
 # ---------------------------------------------------------------------------
 
+_ATHLETE_NO_ZONES = {
+    "sportSettings": [{"activity_type": "Run", "threshold_pace": 3.333333}]
+}
+_ATHLETE_WITH_ZONES = {
+    "sportSettings": [{
+        "activity_type": "Run",
+        "threshold_pace": 3.333333,
+        "pace_zones": [2.593, 2.867, 3.1, 3.333, 3.6, 3.833],
+    }]
+}
+
+
 class TestSetupRunPaceZones:
+    async def test_returns_existing_zones_without_writing(self):
+        """Default (force=False): if zones exist, return them and do NOT call icu_put."""
+        import mcp_server
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=_ATHLETE_WITH_ZONES)), \
+             patch.object(mcp_server, "icu_put", new=AsyncMock(return_value={})) as mock_put:
+            from mcp_server import setup_run_pace_zones
+            result = await setup_run_pace_zones()
+        assert result["status"] == "already_configured"
+        assert "current_zones" in result
+        mock_put.assert_not_called()
+
+    async def test_writes_when_no_existing_zones(self):
+        import mcp_server
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=_ATHLETE_NO_ZONES)), \
+             patch.object(mcp_server, "icu_put", new=AsyncMock(return_value={})) as mock_put:
+            from mcp_server import setup_run_pace_zones
+            result = await setup_run_pace_zones()
+        assert result["status"] == "written"
+        mock_put.assert_called_once()
+
+    async def test_force_overwrites_existing_zones(self):
+        import mcp_server
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=_ATHLETE_WITH_ZONES)), \
+             patch.object(mcp_server, "icu_put", new=AsyncMock(return_value={})) as mock_put:
+            from mcp_server import setup_run_pace_zones
+            result = await setup_run_pace_zones(force=True)
+        assert result["status"] == "written"
+        mock_put.assert_called_once()
+
     async def test_writes_6_zone_values(self):
         import mcp_server
-        with patch.object(mcp_server, "icu_put", new=AsyncMock(return_value={})) as mock_put:
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=_ATHLETE_NO_ZONES)), \
+             patch.object(mcp_server, "icu_put", new=AsyncMock(return_value={})) as mock_put:
             from mcp_server import setup_run_pace_zones
-            result = await setup_run_pace_zones(threshold_pace_min_per_km=5.0)
-        assert result["status"] == "ok"
+            result = await setup_run_pace_zones()
         assert len(result["zones_written"]) == 6
         _, payload = mock_put.call_args[0]
-        assert "pace_zones" in payload
         assert len(payload["pace_zones"]) == 6
-
-    async def test_zone_percentages_increase(self):
-        import mcp_server
-        with patch.object(mcp_server, "icu_put", new=AsyncMock(return_value={})):
-            from mcp_server import setup_run_pace_zones
-            result = await setup_run_pace_zones(threshold_pace_min_per_km=5.0)
-        pcts = [result["zones_written"][f"Z{i+1}"]["pct_threshold"] for i in range(6)]
-        assert pcts == sorted(pcts)
 
     async def test_z4_equals_threshold(self):
         import mcp_server
-        with patch.object(mcp_server, "icu_put", new=AsyncMock(return_value={})):
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=_ATHLETE_NO_ZONES)), \
+             patch.object(mcp_server, "icu_put", new=AsyncMock(return_value={})):
             from mcp_server import setup_run_pace_zones
-            result = await setup_run_pace_zones(threshold_pace_min_per_km=5.0)
+            result = await setup_run_pace_zones()
         assert result["zones_written"]["Z4"]["pct_threshold"] == 100
 
-    async def test_error_when_no_threshold(self):
+    async def test_zone_percentages_increase(self):
+        import mcp_server
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=_ATHLETE_NO_ZONES)), \
+             patch.object(mcp_server, "icu_put", new=AsyncMock(return_value={})):
+            from mcp_server import setup_run_pace_zones
+            result = await setup_run_pace_zones()
+        pcts = [result["zones_written"][f"Z{i+1}"]["pct_threshold"] for i in range(6)]
+        assert pcts == sorted(pcts)
+
+    async def test_garmin_zone_boundaries(self):
+        """Z1/Z2 boundary should be 78%, Z2/Z3 should be 86% (matches Garmin model)."""
+        import mcp_server
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=_ATHLETE_NO_ZONES)), \
+             patch.object(mcp_server, "icu_put", new=AsyncMock(return_value={})):
+            from mcp_server import setup_run_pace_zones
+            result = await setup_run_pace_zones()
+        assert result["zones_written"]["Z1"]["pct_threshold"] == 78
+        assert result["zones_written"]["Z2"]["pct_threshold"] == 86
+        assert result["zones_written"]["Z3"]["pct_threshold"] == 93
+
+    async def test_error_when_no_threshold_and_none_in_settings(self):
         import mcp_server
         athlete_data = {"sportSettings": [{"activity_type": "Run"}]}
         with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=athlete_data)):
@@ -136,22 +189,19 @@ class TestSetupRunPaceZones:
 
     async def test_reads_threshold_from_athlete(self):
         import mcp_server
-        athlete_data = {
-            "sportSettings": [{"activity_type": "Run", "threshold_pace": 3.333333}]
-        }
-        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=athlete_data)), \
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=_ATHLETE_NO_ZONES)), \
              patch.object(mcp_server, "icu_put", new=AsyncMock(return_value={})):
             from mcp_server import setup_run_pace_zones
             result = await setup_run_pace_zones()
-        assert result["status"] == "ok"
+        assert result["status"] == "written"
         assert "5:00" in result["threshold_pace"]
 
     async def test_zone_speeds_increase_in_ms(self):
-        """Z6 m/s must be faster (higher) than Z1 m/s."""
         import mcp_server
-        with patch.object(mcp_server, "icu_put", new=AsyncMock(return_value={})) as mock_put:
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=_ATHLETE_NO_ZONES)), \
+             patch.object(mcp_server, "icu_put", new=AsyncMock(return_value={})) as mock_put:
             from mcp_server import setup_run_pace_zones
-            await setup_run_pace_zones(threshold_pace_min_per_km=5.0)
+            await setup_run_pace_zones()
         _, payload = mock_put.call_args[0]
         speeds = payload["pace_zones"]
         assert speeds == sorted(speeds)
