@@ -175,6 +175,12 @@ async def icu_put(client: httpx.AsyncClient, path: str, payload: dict) -> Any:
     return r.json()
 
 
+async def icu_post(client: httpx.AsyncClient, path: str, payload: Any) -> Any:
+    r = await client.post(f"{BASE_URL}/{path}", auth=_auth(), json=payload)
+    _icu_raise(r)
+    return r.json()
+
+
 async def icu_delete(client: httpx.AsyncClient, path: str) -> None:
     r = await client.delete(f"{BASE_URL}/{path}", auth=_auth())
     _icu_raise(r)
@@ -486,21 +492,59 @@ COACHING_TOOL = {
             },
             "adjustments": {
                 "type": "array",
+                "description": (
+                    "Plan changes. Use 'modify'/'remove' for existing events (requires event_id). "
+                    "Use 'add' to create a new session (requires new_workout, no event_id needed). "
+                    "Keep additions conservative — recovery runs, easy sessions, or rescheduled "
+                    "missed workouts only. Never add hard quality sessions reactively."
+                ),
                 "items": {
                     "type": "object",
-                    "required": ["event_id", "action", "reason"],
+                    "required": ["action", "reason"],
                     "properties": {
-                        "event_id": {"type": "integer"},
-                        "action": {"type": "string", "enum": ["modify", "remove"]},
+                        "event_id": {
+                            "type": "integer",
+                            "description": "Required for modify/remove. Omit for add.",
+                        },
+                        "action": {"type": "string", "enum": ["modify", "remove", "add"]},
                         "reason": {"type": "string"},
                         "changes": {
                             "type": "object",
+                            "description": "Fields to update. Used with action=modify.",
                             "properties": {
                                 "name": {"type": "string"},
                                 "description": {"type": "string"},
                                 "moving_time": {"type": "integer"},
                                 "icu_training_load": {"type": "number"},
                                 "start_date_local": {"type": "string"},
+                            },
+                        },
+                        "new_workout": {
+                            "type": "object",
+                            "description": "Workout to create. Used with action=add.",
+                            "required": ["start_date_local", "name", "type", "description"],
+                            "properties": {
+                                "start_date_local": {
+                                    "type": "string",
+                                    "description": "ISO date YYYY-MM-DD",
+                                },
+                                "name": {"type": "string"},
+                                "type": {
+                                    "type": "string",
+                                    "description": "Sport type e.g. Run, Ride",
+                                },
+                                "description": {
+                                    "type": "string",
+                                    "description": "Structured workout description using % LTHR / absolute pace syntax",
+                                },
+                                "moving_time": {
+                                    "type": "integer",
+                                    "description": "Estimated duration in seconds",
+                                },
+                                "icu_training_load": {
+                                    "type": "number",
+                                    "description": "Target TSS",
+                                },
                             },
                         },
                     },
@@ -673,16 +717,36 @@ async def apply_adjustments(
     planned_ids = {e["id"] for e in planned_workouts}
     applied: list[str] = []
 
+    _ADD_FIELDS = frozenset({
+        "start_date_local", "name", "type", "description",
+        "moving_time", "icu_training_load",
+    })
+
     for adj in adjustments:
         event_id = adj.get("event_id")
         action = adj.get("action", "keep")
         reason = adj.get("reason", "")
 
-        if event_id not in planned_ids:
-            log.warning("Skipping unknown event_id %s", event_id)
-            continue
-
         try:
+            if action == "add":
+                nw = adj.get("new_workout") or {}
+                payload = {k: v for k, v in nw.items() if k in _ADD_FIELDS}
+                payload.setdefault("category", "WORKOUT")
+                if "start_date_local" in payload:
+                    # Normalise to datetime string
+                    d = payload["start_date_local"]
+                    if "T" not in d:
+                        payload["start_date_local"] = f"{d}T00:00:00"
+                result = await icu_post(client, f"{athlete}/events", payload)
+                new_id = result.get("id", "?") if isinstance(result, dict) else "?"
+                applied.append(f"➕ Added: {payload.get('name', 'workout')} on {payload.get('start_date_local', '?')[:10]} — {reason}")
+                log.info("Auto-coach added event %s: %s", new_id, payload.get("name"))
+                continue
+
+            if event_id not in planned_ids:
+                log.warning("Skipping unknown event_id %s", event_id)
+                continue
+
             if action == "modify":
                 changes = adj.get("changes", {})
                 safe = {k: v for k, v in changes.items() if k in ALLOWED_FIELDS}
@@ -695,8 +759,8 @@ async def apply_adjustments(
                 await icu_delete(client, f"{athlete}/events/{event_id}")
                 applied.append(f"🗑️ Removed event {event_id} — {reason}")
         except Exception as e:
-            log.exception("Failed to update event %s", event_id)
-            applied.append(f"⚠️ Failed to update event {event_id}: {e}")
+            log.exception("Failed to apply action %s for event %s", action, event_id)
+            applied.append(f"⚠️ Failed ({action}) event {event_id}: {e}")
 
     return applied
 

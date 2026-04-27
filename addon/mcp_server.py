@@ -1078,8 +1078,9 @@ if not READ_ONLY:
         threshold_pace_min_per_km: float | None = None,
         lthr_bpm: int | None = None,
         recalc_hr_zones: bool = True,
+        pace_zones_min_per_km: list[float] | None = None,
     ) -> dict:
-        """Update threshold pace and/or LTHR for a sport in intervals.icu.
+        """Update threshold pace, LTHR, and/or pace zones for a sport in intervals.icu.
 
         Call this when detected thresholds (lthr_detected_bpm, lt_pace_detected_min_per_km
         from recent hard/race activities) suggest the stored values are out of date.
@@ -1100,22 +1101,86 @@ if not READ_ONLY:
           by ≥0:10/km across ≥2 sessions
         - After a race or time trial that serves as a threshold benchmark
 
+        For pace zones: prefer setup_run_pace_zones which auto-computes correct boundaries.
+        Only pass pace_zones_min_per_km manually if you need custom zone placement.
+        pace_zones_min_per_km: 6 values, upper boundary of Z1–Z6 slowest→fastest,
+          e.g. for threshold=5:00/km: [6:40, 5:53, 5:22, 5:00, 4:38, 4:20]
+
         Args:
             sport:                     Sport key e.g. "Run", "Ride", "Swim"
             threshold_pace_min_per_km: New threshold pace in min/km (e.g. 4.87 for 4:52/km).
                                        Converted to m/s internally.
             lthr_bpm:                  New lactate threshold heart rate in bpm.
             recalc_hr_zones:           Recalculate HR zones from new LTHR (default True).
+            pace_zones_min_per_km:     6 zone upper-boundary paces in min/km (use
+                                       setup_run_pace_zones instead for auto-computation).
         """
-        if threshold_pace_min_per_km is None and lthr_bpm is None:
-            return {"error": "Provide at least one of threshold_pace_min_per_km or lthr_bpm"}
+        if threshold_pace_min_per_km is None and lthr_bpm is None and pace_zones_min_per_km is None:
+            return {"error": "Provide at least one of threshold_pace_min_per_km, lthr_bpm, or pace_zones_min_per_km"}
         payload: dict = {}
         if threshold_pace_min_per_km is not None:
             payload["threshold_pace"] = _min_km_to_ms(threshold_pace_min_per_km)
         if lthr_bpm is not None:
             payload["lthr"] = lthr_bpm
+        if pace_zones_min_per_km is not None:
+            if len(pace_zones_min_per_km) != 6:
+                return {"error": "pace_zones_min_per_km must have exactly 6 values (Z1–Z6 upper boundaries)"}
+            payload["pace_zones"] = [_min_km_to_ms(p) for p in pace_zones_min_per_km]
         params = {"recalcHrZones": "true"} if (lthr_bpm is not None and recalc_hr_zones) else None
         return await icu_put(f"athlete/{ATHLETE_ID}/sport-settings/{sport}", payload, params=params)
+
+    @mcp.tool()
+    async def setup_run_pace_zones(threshold_pace_min_per_km: float | None = None) -> dict:
+        """Compute and write standard running pace zones to intervals.icu from threshold pace.
+
+        Zones are computed as percentages of threshold SPEED (not pace), which is the
+        standard convention matching intervals.icu's zone model:
+
+          Z1 Recovery     < 75% threshold speed   (easy jogging)
+          Z2 Endurance   75–85% threshold speed   (aerobic base)
+          Z3 Tempo       85–93% threshold speed   (comfortably hard)
+          Z4 Threshold   93–100% threshold speed  (lactate threshold)
+          Z5 VO2max     100–108% threshold speed  (near-maximal)
+          Z6 Anaerobic  108–115% threshold speed  (sprint/max effort)
+
+        Once zones are set, the workout visualization in intervals.icu will show colored
+        bars for pace-based steps, and "% Pace" syntax becomes available in workout
+        descriptions as an alternative to absolute pace values.
+
+        Reads threshold_pace from get_athlete (running_threshold_pace_min_per_km) if not
+        provided. Always confirm the computed zones with the athlete before writing.
+
+        Args:
+            threshold_pace_min_per_km: Threshold pace in min/km. If omitted, reads from
+                                       the stored running_threshold_pace_min_per_km.
+        """
+        if threshold_pace_min_per_km is None:
+            athlete = await icu_get(f"athlete/{ATHLETE_ID}")
+            sport_settings = athlete.get("sportSettings") or []
+            for ss in sport_settings:
+                if ss.get("activity_type") == "Run" and ss.get("threshold_pace"):
+                    threshold_pace_min_per_km = _ms_to_min_per_km(ss["threshold_pace"])
+                    break
+        if not threshold_pace_min_per_km:
+            return {"error": "No threshold pace available. Pass threshold_pace_min_per_km or set it via update_sport_settings first."}
+
+        t_ms = _min_km_to_ms(threshold_pace_min_per_km)
+        zone_pcts = [0.75, 0.85, 0.93, 1.00, 1.08, 1.15]
+        zone_ms   = [round(pct * t_ms, 6) for pct in zone_pcts]
+        zone_paces = [_ms_to_min_per_km(z) for z in zone_ms]
+
+        payload = {"pace_zones": zone_ms}
+        result = await icu_put(f"athlete/{ATHLETE_ID}/sport-settings/Run", payload)
+
+        return {
+            "status": "ok",
+            "threshold_pace": _format_pace(threshold_pace_min_per_km),
+            "zones_written": {
+                f"Z{i+1}": {"upper_boundary": _format_pace(zone_paces[i]), "pct_threshold": int(zone_pcts[i]*100)}
+                for i in range(6)
+            },
+            "result": result,
+        }
 
 
 @mcp.tool()
@@ -1500,6 +1565,84 @@ async def get_progress(months: int = 3) -> dict:
             "total_activities": sum(m["activity_count"] for m in monthly),
         },
     }
+
+
+@mcp.tool()
+async def get_best_efforts(months: int = 12) -> dict:
+    """Get personal best paces at standard running distances over recent history.
+
+    Scans completed run activities and finds the fastest average pace recorded
+    at each standard distance bracket (±15% tolerance). Most accurate for race
+    efforts and time trials where average pace = best effort pace; for training
+    runs it reflects the fastest full-activity average at that distance.
+
+    Use this to:
+    - Answer "am I getting faster at 10km / half marathon?"
+    - Identify the athlete's current benchmark pace at key distances
+    - Provide context for setting race goals and workout targets
+    - Show progress over time by comparing to older bests
+
+    Args:
+        months: How many months of history to scan (default 12, max 24)
+    """
+    months = min(max(months, 1), 24)
+    data = await icu_get(
+        f"athlete/{ATHLETE_ID}/activities",
+        params={"oldest": days_ago_iso(months * 30), "newest": today_iso()},
+    )
+
+    _RUN_SET = frozenset({"Run", "VirtualRun", "TrailRun", "Treadmill"})
+    runs = [
+        a for a in data
+        if a.get("type") in _RUN_SET
+        and (a.get("moving_time") or 0) > 0
+        and (a.get("distance") or 0) > 0
+    ]
+
+    targets = [
+        ("1km",          1.0),
+        ("3km",          3.0),
+        ("5km",          5.0),
+        ("8km",          8.0),
+        ("10km",        10.0),
+        ("15km",        15.0),
+        ("Half Marathon", 21.0975),
+        ("Marathon",     42.195),
+    ]
+
+    bests: dict[str, dict] = {}
+    for label, target_km in targets:
+        low  = target_km * 0.85
+        high = target_km * 1.15
+        best: dict | None = None
+        for a in runs:
+            dist_km = a["distance"] / 1000
+            if not (low <= dist_km <= high):
+                continue
+            pace = a["moving_time"] / a["distance"] * 1000 / 60  # min/km
+            if best is None or pace < best["pace_min_per_km"]:
+                best = {
+                    "pace_min_per_km": round(pace, 3),
+                    "pace_formatted": _format_pace(pace),
+                    "finish_time": _format_duration(a["moving_time"]),
+                    "distance_km": round(dist_km, 2),
+                    "date": a.get("start_date_local", "")[:10],
+                    "activity_name": a.get("name"),
+                }
+        if best:
+            bests[label] = best
+
+    return {"period_months": months, "best_efforts": bests}
+
+
+def _format_duration(seconds: int) -> str:
+    """Format seconds as H:MM:SS or M:SS."""
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    if h:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
 
 
 _RUN_TYPES = frozenset({"Run", "VirtualRun", "TrailRun", "Treadmill"})
