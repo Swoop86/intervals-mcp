@@ -745,6 +745,13 @@ if not READ_ONLY:
         Repeats:         Nx on its own line before the steps (blank lines around block)
         Sections:        Warmup / Main Set / Cooldown on their own lines
 
+        WEEKLY TARGET — always call set_weekly_target after creating a workout
+        ─────────────────────────────────────────
+        intervals.icu tracks actual vs target each week. After every create_workout
+        call, also call set_weekly_target for that week — even if it is a single
+        session. See set_weekly_target for guidance on how to determine appropriate
+        target values from the athlete's current fitness context.
+
         Args:
             date:         ISO date YYYY-MM-DD (time component added automatically)
             name:         Workout name
@@ -1064,6 +1071,13 @@ if not READ_ONLY:
         Repeats:         Nx on its own line before the steps (blank lines around block)
         Sections:        Warmup / Main Set / Cooldown on their own lines
 
+        WEEKLY TARGETS — always call set_weekly_target for each week in the plan
+        ─────────────────────────────────────────
+        After creating workouts, call set_weekly_target once per week covered by the
+        plan. For a multi-week plan, set a target for every week — load should progress
+        according to the training phase (base/build/peak/taper). See set_weekly_target
+        for the load-scaling guidelines based on athlete fitness.
+
         Args:
             workouts: List of workout objects to create on the calendar.
         """
@@ -1081,6 +1095,88 @@ if not READ_ONLY:
                 entry["start_date_local"] = _normalise_date(entry["start_date_local"])
             safe.append(entry)
         return await icu_post(f"athlete/{ATHLETE_ID}/events/bulk", safe)
+
+    @mcp.tool()
+    async def set_weekly_target(
+        week_date: str,
+        sport: str = "Run",
+        training_load: float | None = None,
+        duration_hours: float | None = None,
+        distance_km: float | None = None,
+        notes: str | None = None,
+    ) -> dict:
+        """Set weekly training targets in intervals.icu for the week containing week_date.
+
+        Always call this after creating any workout — even a single session. intervals.icu
+        tracks actual vs target each week so the athlete can see whether they are hitting
+        the plan. Without a target, the tracking panel is empty.
+
+        HOW TO DETERMINE TARGETS
+        ─────────────────────────────────────────
+        Base targets on the athlete's current fitness context. Use review_training (or
+        the context already fetched) rather than calling extra tools:
+
+          Conservative week  (RI amber, HRV suppressed, ACWR > 1.3):
+            training_load = tss_last_7_days × 0.80
+            distance_km   = recent weekly distance × 0.80
+
+          Maintenance week  (all green, ACWR 0.9–1.1):
+            training_load = tss_last_7_days × 1.00
+            distance_km   = recent weekly distance × 1.00
+
+          Build week  (well recovered, CTL building, ACWR < 0.9):
+            training_load = tss_last_7_days × 1.05–1.10
+            distance_km   = recent weekly distance × 1.05–1.10
+
+          Taper / race week:
+            training_load = tss_last_7_days × 0.60–0.70
+            distance_km   = recent weekly distance × 0.60–0.70
+
+        For a single-workout request: estimate the full week total by considering
+        the planned workout plus the athlete's typical remaining weekly sessions.
+        e.g. athlete trains 5×/week, today's workout is a 40min threshold (TSS ~55) →
+        estimate rest of week from recent history and set the full-week target.
+
+        DEDUPLICATION — targets are overwritten if called twice for the same week, so
+        it is safe to call this every time a workout is created or updated.
+
+        Args:
+            week_date:      Any date within the target week (ISO YYYY-MM-DD). The Monday
+                            of that week is used automatically.
+            sport:          Sport type for the target (default "Run").
+            training_load:  Weekly TSS target.
+            duration_hours: Weekly duration target in hours (e.g. 6.5 for 6h30m).
+            distance_km:    Weekly distance target in kilometres.
+            notes:          Optional coaching note visible on the athlete's calendar.
+        """
+        d = datetime.fromisoformat(week_date[:10])
+        monday = d - timedelta(days=d.weekday())
+        payload: dict = {
+            "start_date_local": f"{monday.strftime('%Y-%m-%d')}T00:00:00",
+            "type": sport,
+            "category": "TARGET",
+        }
+        if training_load is not None:
+            payload["icu_training_load"] = training_load
+        if duration_hours is not None:
+            payload["moving_time"] = round(duration_hours * 3600)
+        if distance_km is not None:
+            payload["distance"] = round(distance_km * 1000)
+        if notes:
+            payload["description"] = notes
+        result = await icu_post(f"athlete/{ATHLETE_ID}/events", payload)
+        return {
+            "status": "ok",
+            "week_starting": monday.strftime("%Y-%m-%d"),
+            "sport": sport,
+            "targets_set": {
+                "training_load": training_load,
+                "duration_hours": duration_hours,
+                "distance_km": distance_km,
+                "notes": notes,
+            },
+            "event_id": result.get("id") if isinstance(result, dict) else None,
+        }
 
 
 if not READ_ONLY:

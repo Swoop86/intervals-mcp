@@ -1,4 +1,4 @@
-"""Tests for get_best_efforts, setup_run_pace_zones, and auto-coach add action."""
+"""Tests for get_best_efforts, setup_run_pace_zones, set_weekly_target, and auto-coach add action."""
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -328,3 +328,82 @@ class TestCoachAddAction:
         applied = await claude_coach.apply_adjustments(mock_client, adj, planned)
         assert len(applied) == 1
         assert "Removed" in applied[0]
+
+
+# ---------------------------------------------------------------------------
+# set_weekly_target
+# ---------------------------------------------------------------------------
+
+class TestSetWeeklyTarget:
+    async def test_creates_target_event(self):
+        import mcp_server
+        with patch.object(mcp_server, "icu_post", new=AsyncMock(return_value={"id": 77})) as mock_post:
+            from mcp_server import set_weekly_target
+            result = await set_weekly_target("2026-04-29", training_load=80, distance_km=50)
+        assert result["status"] == "ok"
+        mock_post.assert_called_once()
+        path, payload = mock_post.call_args[0]
+        assert "events" in path
+        assert payload["category"] == "TARGET"
+        assert payload["icu_training_load"] == 80
+        assert payload["distance"] == 50000
+
+    async def test_uses_monday_of_week(self):
+        """Any date in the week should resolve to its Monday."""
+        import mcp_server
+        with patch.object(mcp_server, "icu_post", new=AsyncMock(return_value={"id": 1})) as mock_post:
+            from mcp_server import set_weekly_target
+            # 2026-04-29 is a Wednesday — Monday of that week is 2026-04-27
+            await set_weekly_target("2026-04-29", training_load=70)
+        _, payload = mock_post.call_args[0]
+        assert payload["start_date_local"].startswith("2026-04-27")
+
+    async def test_monday_input_unchanged(self):
+        import mcp_server
+        with patch.object(mcp_server, "icu_post", new=AsyncMock(return_value={"id": 1})) as mock_post:
+            from mcp_server import set_weekly_target
+            await set_weekly_target("2026-04-27", training_load=70)  # already Monday
+        _, payload = mock_post.call_args[0]
+        assert payload["start_date_local"].startswith("2026-04-27")
+
+    async def test_duration_converted_to_seconds(self):
+        import mcp_server
+        with patch.object(mcp_server, "icu_post", new=AsyncMock(return_value={"id": 1})) as mock_post:
+            from mcp_server import set_weekly_target
+            await set_weekly_target("2026-04-27", duration_hours=6.5)
+        _, payload = mock_post.call_args[0]
+        assert payload["moving_time"] == 6.5 * 3600
+
+    async def test_notes_become_description(self):
+        import mcp_server
+        with patch.object(mcp_server, "icu_post", new=AsyncMock(return_value={"id": 1})) as mock_post:
+            from mcp_server import set_weekly_target
+            await set_weekly_target("2026-04-27", training_load=60, notes="Base phase")
+        _, payload = mock_post.call_args[0]
+        assert payload["description"] == "Base phase"
+
+    async def test_sport_defaults_to_run(self):
+        import mcp_server
+        with patch.object(mcp_server, "icu_post", new=AsyncMock(return_value={"id": 1})) as mock_post:
+            from mcp_server import set_weekly_target
+            await set_weekly_target("2026-04-27", training_load=60)
+        _, payload = mock_post.call_args[0]
+        assert payload["type"] == "Run"
+
+    async def test_omitted_fields_not_in_payload(self):
+        """Fields not provided should not appear in the posted payload."""
+        import mcp_server
+        with patch.object(mcp_server, "icu_post", new=AsyncMock(return_value={"id": 1})) as mock_post:
+            from mcp_server import set_weekly_target
+            await set_weekly_target("2026-04-27", training_load=60)
+        _, payload = mock_post.call_args[0]
+        assert "moving_time" not in payload
+        assert "distance" not in payload
+        assert "description" not in payload
+
+    async def test_returns_week_starting_date(self):
+        import mcp_server
+        with patch.object(mcp_server, "icu_post", new=AsyncMock(return_value={"id": 5})):
+            from mcp_server import set_weekly_target
+            result = await set_weekly_target("2026-04-30", training_load=75)
+        assert result["week_starting"] == "2026-04-27"  # Thursday → Monday
