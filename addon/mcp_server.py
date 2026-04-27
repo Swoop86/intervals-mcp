@@ -1151,8 +1151,9 @@ if not READ_ONLY:
         """
         d = datetime.fromisoformat(week_date[:10])
         monday = d - timedelta(days=d.weekday())
+        monday_str = monday.strftime("%Y-%m-%d")
         payload: dict = {
-            "start_date_local": f"{monday.strftime('%Y-%m-%d')}T00:00:00",
+            "start_date_local": f"{monday_str}T00:00:00",
             "type": sport,
             "category": "TARGET",
         }
@@ -1164,10 +1165,32 @@ if not READ_ONLY:
             payload["distance"] = round(distance_km * 1000)
         if notes:
             payload["description"] = notes
-        result = await icu_post(f"athlete/{ATHLETE_ID}/events", payload)
+
+        # Check for an existing TARGET event for this week+sport to avoid duplicates
+        existing_id: int | None = None
+        try:
+            events = await icu_get(
+                f"athlete/{ATHLETE_ID}/events",
+                params={"oldest": monday_str, "newest": monday_str},
+            )
+            if isinstance(events, list):
+                for ev in events:
+                    if ev.get("category") == "TARGET" and ev.get("type") == sport:
+                        existing_id = ev.get("id")
+                        break
+        except Exception:
+            pass  # if fetch fails, fall back to creating a new event
+
+        if existing_id is not None:
+            result = await icu_put(f"athlete/{ATHLETE_ID}/events/{existing_id}", payload)
+            action = "updated"
+        else:
+            result = await icu_post(f"athlete/{ATHLETE_ID}/events", payload)
+            action = "created"
+
         return {
-            "status": "ok",
-            "week_starting": monday.strftime("%Y-%m-%d"),
+            "status": action,
+            "week_starting": monday_str,
             "sport": sport,
             "targets_set": {
                 "training_load": training_load,
@@ -1620,6 +1643,13 @@ async def get_progress(months: int = 3) -> dict:
     - Volume increasing while wellness holds → good adaptation
     - Volume increasing while HRV falls + resting HR rises → overreaching risk
 
+    Aerobic efficiency factor (aerobic_ef, m/s per bpm):
+    - Computed from easy runs (avg HR 120–155 bpm, distance > 3 km)
+    - Higher value = faster running at the same heart rate = better aerobic economy
+    - Rising EF month-over-month = aerobic base is developing correctly
+    - Typical range 0.020–0.035; elite runners >0.040
+    - If EF is flat despite rising volume → check easy pace is truly easy (HR creep)
+
     Args:
         months: Months of history to analyse (1–12, default 3)
     """
@@ -1659,18 +1689,25 @@ async def get_progress(months: int = 3) -> dict:
 
         sleep_vals = [w["sleepSecs"] / 3600 for w in wells if w.get("sleepSecs")]
 
-        # Easy-pace proxy: runs with avg HR < 155 bpm and distance > 1km
+        # Easy-pace proxy: runs with avg HR 120–155 bpm and distance > 3km
         easy_runs = [
             a for a in acts
-            if a.get("type") in ("Run", "VirtualRun")
-            and (a.get("average_heartrate") or 999) < 155
-            and (a.get("distance") or 0) > 1000
+            if a.get("type") in ("Run", "VirtualRun", "TrailRun", "Treadmill")
+            and 120 <= (a.get("average_heartrate") or 0) <= 155
+            and (a.get("distance") or 0) > 3000
         ]
         easy_paces = [
             a["moving_time"] / a["distance"] * 1000 / 60
             for a in easy_runs
             if a.get("moving_time") and a.get("distance")
         ]
+        # Aerobic efficiency factor: m/s per bpm — higher = better aerobic economy
+        ef_vals = [
+            (a["distance"] / a["moving_time"]) / a["average_heartrate"]
+            for a in easy_runs
+            if a.get("moving_time") and a.get("distance") and a.get("average_heartrate")
+        ]
+        easy_hr_vals = [a["average_heartrate"] for a in easy_runs if a.get("average_heartrate")]
 
         monthly.append({
             "month": month,
@@ -1679,6 +1716,8 @@ async def get_progress(months: int = 3) -> dict:
             "total_tss": round(sum(a.get("icu_training_load") or 0 for a in acts)),
             "ctl_end": acts[-1].get("icu_ctl") if acts else None,
             "avg_easy_pace_min_per_km": round(sum(easy_paces) / len(easy_paces), 2) if easy_paces else None,
+            "aerobic_ef": round(sum(ef_vals) / len(ef_vals), 5) if ef_vals else None,
+            "aerobic_ef_avg_hr": round(sum(easy_hr_vals) / len(easy_hr_vals), 1) if easy_hr_vals else None,
             "avg_hrv": _avg(wells, "hrv"),
             "avg_resting_hr": _avg(wells, "restingHR"),
             "avg_sleep_h": round(sum(sleep_vals) / len(sleep_vals), 1) if sleep_vals else None,
@@ -1690,6 +1729,11 @@ async def get_progress(months: int = 3) -> dict:
     ctl_start = monthly[0].get("ctl_end") if monthly else None
     ctl_end   = monthly[-1].get("ctl_end") if monthly else None
 
+    ef_months = [m for m in monthly if m.get("aerobic_ef") is not None]
+    ef_start  = ef_months[0]["aerobic_ef"]  if len(ef_months) >= 2 else None
+    ef_end    = ef_months[-1]["aerobic_ef"] if len(ef_months) >= 2 else None
+    ef_change_pct = round((ef_end - ef_start) / ef_start * 100, 1) if ef_start and ef_end else None
+
     return {
         "period_months": months,
         "monthly_summaries": monthly,
@@ -1699,6 +1743,9 @@ async def get_progress(months: int = 3) -> dict:
             "ctl_change": round(ctl_end - ctl_start, 1) if ctl_start and ctl_end else None,
             "total_km": round(sum(m["total_km"] for m in monthly), 1),
             "total_activities": sum(m["activity_count"] for m in monthly),
+            "aerobic_ef_start": ef_start,
+            "aerobic_ef_end": ef_end,
+            "aerobic_ef_change_pct": ef_change_pct,
         },
     }
 
@@ -1769,6 +1816,251 @@ async def get_best_efforts(months: int = 12) -> dict:
             bests[label] = best
 
     return {"period_months": months, "best_efforts": bests}
+
+
+# ---------------------------------------------------------------------------
+# Training distribution helpers
+# ---------------------------------------------------------------------------
+
+# Map Garmin training_effect_label to a 3-bucket zone intensity
+_TE_BUCKET: dict[str | None, str] = {
+    None:          "low",
+    "Recovery":    "low",
+    "Base":        "low",
+    "Tempo":       "moderate",
+    "Threshold":   "high",
+    "VO2Max":      "high",
+    "Anaerobic":   "high",
+    "Sprint":      "high",
+}
+
+
+def _classify_week_distribution(low_s: float, mod_s: float, high_s: float) -> str:
+    total = low_s + mod_s + high_s
+    if total == 0:
+        return "No data"
+    s1, s2, s3 = low_s / total, mod_s / total, high_s / total
+    # Intervals.icu forum classification logic
+    if s3 > s2 and s3 > 0.499 * (s2 + s1):
+        return "HIIT"
+    if s1 > 0.75 and s3 > 0.10 and s2 < 0.15:
+        return "Polarized"
+    if low_s > mod_s > high_s:
+        return "Pyramidal"
+    if s3 >= 0.20:
+        return "Threshold"
+    if s2 >= 0.25:
+        return "Threshold"
+    return "Aerobic Base"
+
+
+@mcp.tool()
+async def get_training_distribution(weeks: int = 8) -> dict:
+    """Classify each recent week as Polarized, Pyramidal, Threshold, HIIT, or Aerobic Base.
+
+    Shows how training time is distributed across intensity zones and labels
+    each week with its training methodology. Use this to:
+    - Check whether planned training structure is actually being executed
+    - Spot unintentional threshold accumulation ("junk miles in the grey zone")
+    - Ensure build phases are genuinely polarized, not just moderate-intensity
+    - Advise the athlete on zone balance before their next training block
+
+    Classification method (based on Garmin training effect label per activity):
+      Low-intensity:    Recovery, Base sessions
+      Moderate:         Tempo sessions
+      High-intensity:   Threshold, VO2Max, Anaerobic, Sprint sessions
+
+    Week labels:
+      Polarized   — >75% low + >10% high + <15% moderate (ideal for base building)
+      Pyramidal   — low > moderate > high (standard periodized)
+      Threshold   — high or moderate intensity ≥20-25% of total time
+      HIIT        — high intensity > moderate AND > ~50% of low+moderate combined
+      Aerobic Base— mostly low, very little moderate or high (recovery week)
+      No data     — insufficient activities
+
+    Coaching notes to include:
+    - Flag 3+ consecutive Threshold weeks as overreaching risk
+    - Suggest a Polarized or Aerobic Base week after 2+ Threshold weeks
+    - For event prep (century, multi-day): base phase should be Polarized/Pyramidal;
+      build phase can include Threshold weeks; taper should return to Aerobic Base
+
+    Args:
+        weeks: How many recent weeks to analyse (1–26, default 8)
+    """
+    from collections import defaultdict
+
+    weeks = max(1, min(26, weeks))
+    days  = weeks * 7 + 7  # buffer for partial first week
+
+    activities = await icu_get(
+        f"athlete/{ATHLETE_ID}/activities",
+        params={"oldest": days_ago_iso(days), "newest": today_iso()},
+    )
+
+    # Group by ISO year-week (e.g. "2026-W17")
+    by_week: dict[str, list] = defaultdict(list)
+    for a in activities:
+        date_str = (a.get("start_date_local") or "")[:10]
+        if not date_str:
+            continue
+        d = datetime.fromisoformat(date_str)
+        iso_week = d.strftime("%G-W%V")
+        by_week[iso_week].append(a)
+
+    weekly: list[dict] = []
+    for iso_week in sorted(by_week.keys())[-weeks:]:
+        acts = by_week[iso_week]
+        low_s = mod_s = high_s = 0.0
+        for a in acts:
+            duration_s = a.get("moving_time") or 0
+            label      = a.get("training_effect_label")
+            bucket     = _TE_BUCKET.get(label, "low")
+            if bucket == "low":
+                low_s  += duration_s
+            elif bucket == "moderate":
+                mod_s  += duration_s
+            else:
+                high_s += duration_s
+
+        total_s = low_s + mod_s + high_s
+        distribution = _classify_week_distribution(low_s, mod_s, high_s)
+
+        # Monday date for display
+        year, week_num = iso_week.split("-W")
+        monday = datetime.strptime(f"{year} {week_num} 1", "%G %V %u")
+
+        weekly.append({
+            "week": iso_week,
+            "week_starting": monday.strftime("%Y-%m-%d"),
+            "activity_count": len(acts),
+            "total_hours": round(total_s / 3600, 1),
+            "distribution": distribution,
+            "zone_pct": {
+                "low_pct":      round(low_s  / total_s * 100, 1) if total_s else 0,
+                "moderate_pct": round(mod_s  / total_s * 100, 1) if total_s else 0,
+                "high_pct":     round(high_s / total_s * 100, 1) if total_s else 0,
+            },
+        })
+
+    # Count consecutive threshold/high-intensity weeks for overreaching flag
+    consecutive_hard = 0
+    for w in reversed(weekly):
+        if w["distribution"] in ("Threshold", "HIIT"):
+            consecutive_hard += 1
+        else:
+            break
+
+    return {
+        "period_weeks": weeks,
+        "weekly": weekly,
+        "consecutive_hard_weeks": consecutive_hard,
+        "overreaching_flag": consecutive_hard >= 3,
+    }
+
+
+@mcp.tool()
+async def compare_season(weeks: int = 4) -> dict:
+    """Compare current training period against the same period one year ago.
+
+    Returns side-by-side weekly metrics for the current N-week window and the
+    identical calendar window from 12 months ago. Use this to answer:
+    - "Am I fitter than I was this time last year?"
+    - "Is my training volume higher / lower than last year's base?"
+    - "How does my current form compare to where I was before my last big event?"
+
+    Metrics compared per period:
+      total_km, total_tss, avg_ctl, avg_easy_pace_min_per_km, aerobic_ef,
+      activity_count, avg_hrv, avg_resting_hr
+
+    Trend interpretation:
+    - total_km +10% YoY with stable wellness → healthy volume progression
+    - total_tss up but pace flat → volume not translating to speed; check intensity mix
+    - avg_ctl higher now → more base fitness than this time last year
+    - aerobic_ef higher now → better running economy at same HR (key for endurance events)
+    - avg_hrv lower now → accumulated fatigue; may need extra recovery before build phase
+
+    Args:
+        weeks: Window size to compare (1–12, default 4)
+    """
+    from collections import defaultdict
+
+    weeks = max(1, min(12, weeks))
+
+    today = datetime.now().date()
+    # Current window: last `weeks` complete weeks (ending yesterday)
+    end_now   = today - timedelta(days=today.weekday() + 1)  # last Sunday
+    start_now = end_now - timedelta(weeks=weeks) + timedelta(days=1)
+    # Same window exactly 52 weeks ago
+    start_lyr = start_now - timedelta(weeks=52)
+    end_lyr   = end_now   - timedelta(weeks=52)
+
+    def _iso(d) -> str:
+        return d.isoformat()
+
+    acts_now, acts_lyr, well_now, well_lyr = await asyncio.gather(
+        icu_get(f"athlete/{ATHLETE_ID}/activities", params={"oldest": _iso(start_now), "newest": _iso(end_now)}),
+        icu_get(f"athlete/{ATHLETE_ID}/activities", params={"oldest": _iso(start_lyr), "newest": _iso(end_lyr)}),
+        icu_get(f"athlete/{ATHLETE_ID}/wellness",   params={"oldest": _iso(start_now), "newest": _iso(end_now)}),
+        icu_get(f"athlete/{ATHLETE_ID}/wellness",   params={"oldest": _iso(start_lyr), "newest": _iso(end_lyr)}),
+    )
+
+    def _summarise_period(acts: list, wells: list) -> dict:
+        total_km  = sum((a.get("distance") or 0) for a in acts) / 1000
+        total_tss = sum(a.get("icu_training_load") or 0 for a in acts)
+        ctl_vals  = [a["icu_ctl"] for a in acts if a.get("icu_ctl") is not None]
+        avg_ctl   = round(sum(ctl_vals) / len(ctl_vals), 1) if ctl_vals else None
+
+        easy_runs = [
+            a for a in acts
+            if a.get("type") in _RUN_TYPES
+            and 120 <= (a.get("average_heartrate") or 0) <= 155
+            and (a.get("distance") or 0) > 3000
+        ]
+        pace_vals = [
+            a["moving_time"] / a["distance"] * 1000 / 60
+            for a in easy_runs if a.get("moving_time") and a.get("distance")
+        ]
+        ef_vals = [
+            (a["distance"] / a["moving_time"]) / a["average_heartrate"]
+            for a in easy_runs
+            if a.get("moving_time") and a.get("distance") and a.get("average_heartrate")
+        ]
+
+        hrv_vals = [w["hrv"] for w in wells if w.get("hrv") is not None]
+        rhr_vals = [w["restingHR"] for w in wells if w.get("restingHR") is not None]
+
+        return {
+            "activity_count": len(acts),
+            "total_km": round(total_km, 1),
+            "total_tss": round(total_tss),
+            "avg_ctl": avg_ctl,
+            "avg_easy_pace_min_per_km": round(sum(pace_vals) / len(pace_vals), 2) if pace_vals else None,
+            "aerobic_ef": round(sum(ef_vals) / len(ef_vals), 5) if ef_vals else None,
+            "avg_hrv": round(sum(hrv_vals) / len(hrv_vals), 1) if hrv_vals else None,
+            "avg_resting_hr": round(sum(rhr_vals) / len(rhr_vals), 1) if rhr_vals else None,
+        }
+
+    now_summary = _summarise_period(acts_now, well_now)
+    lyr_summary = _summarise_period(acts_lyr, well_lyr)
+
+    def _pct_change(now_val, lyr_val) -> float | None:
+        if now_val is None or lyr_val is None or lyr_val == 0:
+            return None
+        return round((now_val - lyr_val) / lyr_val * 100, 1)
+
+    return {
+        "window_weeks": weeks,
+        "current_period": {"start": _iso(start_now), "end": _iso(end_now), **now_summary},
+        "year_ago_period": {"start": _iso(start_lyr), "end": _iso(end_lyr), **lyr_summary},
+        "changes_pct": {
+            "total_km":                _pct_change(now_summary["total_km"],                lyr_summary["total_km"]),
+            "total_tss":               _pct_change(now_summary["total_tss"],               lyr_summary["total_tss"]),
+            "avg_ctl":                 _pct_change(now_summary["avg_ctl"],                 lyr_summary["avg_ctl"]),
+            "avg_easy_pace_min_per_km": _pct_change(now_summary["avg_easy_pace_min_per_km"], lyr_summary["avg_easy_pace_min_per_km"]),
+            "aerobic_ef":              _pct_change(now_summary["aerobic_ef"],              lyr_summary["aerobic_ef"]),
+            "avg_hrv":                 _pct_change(now_summary["avg_hrv"],                 lyr_summary["avg_hrv"]),
+        },
+    }
 
 
 def _format_duration(seconds: int) -> str:
