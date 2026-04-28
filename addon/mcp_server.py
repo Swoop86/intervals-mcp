@@ -890,9 +890,15 @@ async def review_training(activity_id: str = "") -> dict:
     different systems (Garmin, Olympiatoppen, CTS, Friel) use different breakpoints
     and zone 2 in one system ≠ zone 2 in another.
 
-    If run_hr_zones_labeled is absent, LTHR is not configured. Offer to call
-    update_sport_settings(sport="Run", lthr_bpm=X, recalc_hr_zones=True) to set
-    it — this also syncs zones to Garmin automatically.
+    If run_hr_zones_labeled is absent, LTHR is not configured. This is a
+    first-time setup situation — prompt the athlete:
+      "Your LTHR is not set in intervals.icu. Garmin Connect shows your
+       Lactate Threshold under Performance Stats → Lactate Threshold.
+       Please share that number and I'll configure your HR zones."
+    Then call update_sport_settings(sport="Run", lthr_bpm=X, recalc_hr_zones=True).
+    This sets LTHR in intervals.icu AND syncs the recalculated HR zones to
+    Garmin automatically — the athlete does NOT need to change Garmin Connect.
+    Garmin and intervals.icu will then use the same LTHR and zone boundaries.
 
     Each activity in recent_activities now includes Garmin-sourced fields when available:
       max_hr, avg_temperature_c (wrist-sensor estimate — treat as relative indicator only,
@@ -1319,17 +1325,26 @@ if not READ_ONLY:
         """
         if threshold_pace_min_per_km is None and lthr_bpm is None and pace_zones_min_per_km is None:
             return {"error": "Provide at least one of threshold_pace_min_per_km, lthr_bpm, or pace_zones_min_per_km"}
-        payload: dict = {}
+        updates: dict = {}
         if threshold_pace_min_per_km is not None:
-            payload["threshold_pace"] = _min_km_to_ms(threshold_pace_min_per_km)
+            updates["threshold_pace"] = _min_km_to_ms(threshold_pace_min_per_km)
         if lthr_bpm is not None:
-            payload["lthr"] = lthr_bpm
+            updates["lthr"] = lthr_bpm
         if pace_zones_min_per_km is not None:
             if len(pace_zones_min_per_km) != 6:
                 return {"error": "pace_zones_min_per_km must have exactly 6 values (Z1–Z6 upper boundaries)"}
-            payload["pace_zones"] = [_min_km_to_ms(p) for p in pace_zones_min_per_km]
+            updates["pace_zones"] = [_min_km_to_ms(p) for p in pace_zones_min_per_km]
         params = {"recalcHrZones": "true"} if (lthr_bpm is not None and recalc_hr_zones) else None
-        return await icu_put(f"athlete/{ATHLETE_ID}/sport-settings/{sport}", payload, params=params)
+
+        # Read current sport settings and merge — pace/HR zone PUTs are full-replace,
+        # so sending only the changed fields would wipe everything else.
+        try:
+            athlete = await icu_get(f"athlete/{ATHLETE_ID}")
+            sport_settings = athlete.get("sportSettings") or []
+            current_ss = next((s for s in sport_settings if s.get("activity_type") == sport), {})
+        except Exception:
+            current_ss = {}
+        return await icu_put(f"athlete/{ATHLETE_ID}/sport-settings/{sport}", {**current_ss, **updates}, params=params)
 
     @mcp.tool()
     async def setup_run_pace_zones(
@@ -1370,10 +1385,12 @@ if not READ_ONLY:
         athlete = await icu_get(f"athlete/{ATHLETE_ID}")
         sport_settings = athlete.get("sportSettings") or []
 
+        run_ss: dict = {}
         existing_zones: list[float] = []
         stored_threshold: float | None = None
         for ss in sport_settings:
             if ss.get("activity_type") == "Run":
+                run_ss = ss
                 if ss.get("threshold_pace"):
                     stored_threshold = _ms_to_min_per_km(ss["threshold_pace"])
                 if ss.get("pace_zones"):
@@ -1400,7 +1417,10 @@ if not READ_ONLY:
         zone_ms   = [round(pct * t_ms, 6) for pct in zone_pcts]
         zone_paces = [_ms_to_min_per_km(z) for z in zone_ms]
 
-        result = await icu_put(f"athlete/{ATHLETE_ID}/sport-settings/Run", {"pace_zones": zone_ms})
+        # Merge into the full current settings object — pace/HR zone PUTs are
+        # full-replace on the server, so omitting fields would wipe them (e.g.
+        # sending only pace_zones would clear LTHR and threshold_pace).
+        result = await icu_put(f"athlete/{ATHLETE_ID}/sport-settings/Run", {**run_ss, "pace_zones": zone_ms})
 
         return {
             "status": "written",
