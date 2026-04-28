@@ -490,6 +490,28 @@ def _format_pace(min_per_km: float) -> str:
     return f"{minutes}:{seconds:02d}/km"
 
 
+def _label_hr_zones(lthr: int | None, zone_uppers: list) -> list[dict]:
+    """Compute labeled HR zone entries from upper-boundary BPM list + LTHR."""
+    labeled = []
+    lower = 0
+    for i, upper in enumerate(zone_uppers, start=1):
+        entry: dict = {
+            "zone": f"Z{i}",
+            "min_bpm": lower,
+            "max_bpm": upper,
+            "range_bpm": f"{lower}–{upper}",
+        }
+        if lthr:
+            min_pct = round(lower / lthr * 100) if lower > 0 else 0
+            max_pct = round(upper / lthr * 100)
+            entry["min_pct_lthr"] = min_pct
+            entry["max_pct_lthr"] = max_pct
+            entry["range_pct_lthr"] = f"{min_pct}–{max_pct}% LTHR"
+        labeled.append(entry)
+        lower = upper
+    return labeled
+
+
 def _extract_sport_zones(data: dict) -> None:
     """Extract per-sport coaching fields from sportSettings and add them to data."""
     sport_settings = data.get("sportSettings") or []
@@ -501,17 +523,28 @@ def _extract_sport_zones(data: dict) -> None:
         prefix = sport.lower()  # "run", "ride", "swim", etc.
 
         # LTHR per sport
-        if ss.get("lthr"):
-            data[f"{prefix}_lthr_bpm"] = ss["lthr"]
+        lthr = ss.get("lthr")
+        if lthr:
+            data[f"{prefix}_lthr_bpm"] = lthr
 
         # Max HR per sport
         if ss.get("max_heart_rate"):
             data[f"{prefix}_max_hr_bpm"] = ss["max_heart_rate"]
 
-        # HR zone boundaries (bpm) — same for all sports
+        # HR zone methodology name (identifies Garmin / Olympiatoppen / CTS / Friel etc.)
+        zone_method = (
+            ss.get("heartRateZoneMethod")
+            or ss.get("hr_zone_method")
+            or ss.get("zoneMethod")
+        )
+        if zone_method:
+            data[f"{prefix}_hr_zone_method"] = zone_method
+
+        # HR zone boundaries (bpm) + pre-labeled ranges
         hr_zones = ss.get("zones_heart_rate") or []
         if hr_zones:
             data[f"{prefix}_hr_zones_bpm"] = hr_zones
+            data[f"{prefix}_hr_zones_labeled"] = _label_hr_zones(lthr, hr_zones)
 
         if sport == "Run":
             tp = ss.get("threshold_pace")
@@ -551,22 +584,28 @@ async def get_athlete() -> dict:
       running_pace_zones_min_per_km      all pace zone boundaries
       run_lthr_bpm                       running-specific LTHR
       run_max_hr_bpm                     running max HR
-      run_hr_zones_bpm                   running HR zone boundaries
+      run_hr_zone_method                 zone methodology (e.g. GARMIN, OLYMPIATOPPEN, CTS_RUN)
+      run_hr_zones_bpm                   running HR zone upper boundaries (raw bpm array)
+      run_hr_zones_labeled               pre-computed zone ranges with min_bpm, max_bpm,
+                                         range_bpm, min_pct_lthr, max_pct_lthr, range_pct_lthr
+                                         — USE THIS for all HR target calculations
 
     Cycling:
       cycling_ftp_watts                  cycling FTP
       cycling_power_zones_watts          power zone boundaries
       ride_lthr_bpm                      cycling LTHR
       ride_max_hr_bpm                    cycling max HR
-      ride_hr_zones_bpm                  cycling HR zone boundaries
+      ride_hr_zone_method                zone methodology
+      ride_hr_zones_bpm                  cycling HR zone upper boundaries
+      ride_hr_zones_labeled              pre-computed zone ranges (same structure as run)
 
     Swimming:
       swim_css_min_per_100m              critical swim speed
       swim_lthr_bpm / swim_hr_zones_bpm  swimming HR zones
 
-    Use running_threshold_pace_min_per_km for Pace targets in workout descriptions.
-    Use run_lthr_bpm (or top-level lthr) for LTHR% targets.
-    Prefer these intervals.icu values (Garmin-synced) over get_profile fallbacks.
+    Always use run_hr_zones_labeled for HR targets — it reflects the athlete's
+    configured zone system (Garmin, Olympiatoppen, CTS, Friel, etc.) and LTHR.
+    Never compute zone percentages from scratch; zone systems differ significantly.
     """
     data = await icu_get(f"athlete/{ATHLETE_ID}")
     _extract_sport_zones(data)
@@ -684,21 +723,30 @@ if not READ_ONLY:
             fast: 5.0 × 100/90 = 5.555 → 5:33/km
             slow: 5.0 × 100/85 = 5.882 → 5:53/km  →  "5:33-5:53/km Pace"
 
-        COMPUTING HR TARGETS (easy runs, warmup, cooldown, recovery intervals)
+        HR TARGETS — use configured zone ranges, never compute from scratch
         ─────────────────────────────────────────
-        Use "% LTHR" — intervals.icu resolves it to absolute BPM using the stored
-        LTHR. Do NOT use Z1–Z5 HR (Garmin's zone numbers may not match intervals.icu).
+        athlete_zones.run_hr_zones_labeled (from review_training) contains
+        pre-computed ranges that reflect the athlete's zone methodology (Garmin,
+        Olympiatoppen, CTS, etc.) and LTHR. Example for LTHR 165, Olympiatoppen:
+          Z1: 0–119 bpm  (0–72% LTHR)
+          Z2: 119–135 bpm (72–82% LTHR)
+          Z3: 135–144 bpm (82–87% LTHR)
+          Z4: 144–152 bpm (87–92% LTHR)
+          Z5: 152–165 bpm (92–100% LTHR)
 
-          Recovery / rest interval   65–72% LTHR
-          Easy / aerobic             72–80% LTHR
-          Steady / upper aerobic     80–87% LTHR   (use for warmup before quality)
-          Threshold / hard           90–95% LTHR
+        Always express HR as absolute BPM in the workout description:
+          "119–135 bpm"      ← correct; unambiguous on any watch
+          "Z2" or "S2" alone ← WRONG; zone labels differ across systems
+          Add %LTHR for context: "119–135 bpm (72–82% LTHR)"
 
-        Fallback only: use Z1–Z5 HR if run_lthr_bpm is unavailable.
+        If run_hr_zones_labeled is absent: call update_sport_settings(
+          sport="Run", lthr_bpm=X, recalc_hr_zones=True) to set LTHR and
+          recalculate zones — they sync to Garmin automatically. The athlete
+          does NOT need to change anything in Garmin Connect.
 
-        ONE TARGET PER STEP — pace OR % LTHR, never both on the same line.
+        ONE TARGET PER STEP — pace OR HR (bpm), never both on the same line.
           Quality steps (tempo/threshold/VO2max/strides) → absolute pace
-          All other steps (easy, warmup, cooldown, recovery) → % LTHR
+          All other steps (easy, warmup, cooldown, recovery) → bpm range
 
         RUNNING WORKOUT TYPES
         ─────────────────────────────────────────
@@ -831,9 +879,20 @@ async def review_training(activity_id: str = "") -> dict:
     Use these for all distances, paces, and date references in your response.
 
     The returned context includes `athlete_zones` with Garmin-synced thresholds:
-      running_threshold_pace_min_per_km, run_lthr_bpm, run_hr_zones_bpm,
+      running_threshold_pace_min_per_km, run_lthr_bpm,
+      run_hr_zone_method (e.g. GARMIN, OLYMPIATOPPEN, CTS_RUN),
+      run_hr_zones_labeled — pre-computed zone ranges with min_bpm, max_bpm,
+        range_bpm, min_pct_lthr, max_pct_lthr for each zone
       cycling_ftp_watts, cycling_power_zones_watts, ride_lthr_bpm
-    Use these for all workout targets — no need to call get_athlete separately.
+
+    ALWAYS use run_hr_zones_labeled for HR targets — it reflects the athlete's
+    configured zone system. Never compute zone percentages from first principles;
+    different systems (Garmin, Olympiatoppen, CTS, Friel) use different breakpoints
+    and zone 2 in one system ≠ zone 2 in another.
+
+    If run_hr_zones_labeled is absent, LTHR is not configured. Offer to call
+    update_sport_settings(sport="Run", lthr_bpm=X, recalc_hr_zones=True) to set
+    it — this also syncs zones to Garmin automatically.
 
     Each activity in recent_activities now includes Garmin-sourced fields when available:
       max_hr, avg_temperature_c (wrist-sensor estimate — treat as relative indicator only,
@@ -1217,6 +1276,18 @@ if not READ_ONLY:
         from recent hard/race activities) suggest the stored values are out of date.
         Updated thresholds are synced to Garmin automatically and will be used for all
         future workout pace/HR targets.
+
+        HR ZONES AND GARMIN SYNC
+        ─────────────────────────────────────────
+        When lthr_bpm is set with recalc_hr_zones=True (default), intervals.icu
+        recalculates all HR zone boundaries and syncs them to Garmin automatically.
+        This is the correct way to update Garmin HR zones — the athlete does NOT
+        need to manually change anything in Garmin Connect.
+
+        The recalculated zones use the zone methodology already configured in the
+        athlete's intervals.icu profile (visible as run_hr_zone_method in get_athlete).
+        Different methodologies produce different %LTHR breakpoints. After updating,
+        run get_athlete to verify run_hr_zones_labeled reflects the new zones.
 
         Use coaching judgement before updating:
         - Require ≥1 confirmed hard effort (race, time trial, or structured threshold test)
