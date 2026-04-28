@@ -1331,8 +1331,9 @@ if not READ_ONLY:
         if lthr_bpm is not None:
             updates["lthr"] = lthr_bpm
         if pace_zones_min_per_km is not None:
-            if len(pace_zones_min_per_km) != 6:
-                return {"error": "pace_zones_min_per_km must have exactly 6 values (Z1–Z6 upper boundaries)"}
+            n = len(pace_zones_min_per_km)
+            if not (3 <= n <= 10):
+                return {"error": "pace_zones_min_per_km must have 3–10 values matching the athlete's zone count"}
             updates["pace_zones"] = [_min_km_to_ms(p) for p in pace_zones_min_per_km]
         params = {"recalcHrZones": "true"} if (lthr_bpm is not None and recalc_hr_zones) else None
 
@@ -1344,49 +1345,70 @@ if not READ_ONLY:
             current_ss = next((s for s in sport_settings if s.get("activity_type") == sport), {})
         except Exception:
             current_ss = {}
-        return await icu_put(f"athlete/{ATHLETE_ID}/sport-settings/{sport}", {**current_ss, **updates}, params=params)
+
+        merged = {**current_ss, **updates}
+
+        # Ensure pace_zone_names count matches pace_zones count to avoid API error.
+        # Keep existing names if count already matches; otherwise regenerate defaults.
+        if "pace_zones" in merged:
+            n_zones = len(merged["pace_zones"])
+            existing_names = merged.get("pace_zone_names") or []
+            if len(existing_names) != n_zones:
+                _defaults = ["Recovery", "Endurance", "Aerobic", "Threshold",
+                             "Speed", "VO2max", "Anaerobic", "Sprint", "Max", "Max+"]
+                merged["pace_zone_names"] = _defaults[:n_zones]
+
+        return await icu_put(f"athlete/{ATHLETE_ID}/sport-settings/{sport}", merged, params=params)
+
+    # Pace zone % of threshold SPEED per zone count (upper boundaries).
+    # Adapted so Z1–Z4 always align with Garmin's auto-calc breakpoints.
+    _PACE_ZONE_PCTS: dict[int, list[float]] = {
+        3: [0.86, 1.00, 1.15],
+        4: [0.86, 0.93, 1.00, 1.10],
+        5: [0.78, 0.86, 0.93, 1.00, 1.10],   # Garmin default 5-zone
+        6: [0.78, 0.86, 0.93, 1.00, 1.08, 1.15],
+        7: [0.75, 0.82, 0.89, 0.95, 1.00, 1.08, 1.15],
+    }
+    _PACE_ZONE_NAME_DEFAULTS = [
+        "Recovery", "Endurance", "Aerobic", "Threshold",
+        "Speed", "VO2max", "Anaerobic", "Sprint", "Max", "Max+",
+    ]
 
     @mcp.tool()
     async def setup_run_pace_zones(
         threshold_pace_min_per_km: float | None = None,
         force: bool = False,
     ) -> dict:
-        """Read or write running pace zones in intervals.icu.
+        """Read or write running pace zone boundaries in intervals.icu.
 
         DEFAULT BEHAVIOUR (force=False) — read-only:
-          Always fetches the current pace zones and threshold from intervals.icu first.
+          Always fetches current pace zones and threshold first.
           If zones are already configured, returns them WITHOUT writing anything.
           Use this to inspect what is currently set before deciding to change anything.
 
         WRITE BEHAVIOUR (force=True):
-          Computes new zone boundaries from the given (or stored) threshold pace and
-          writes them. Only do this when the athlete explicitly asks to reset zones, or
-          when no zones exist yet. Never call with force=True speculatively.
+          Recomputes zone boundaries from the threshold pace and writes them.
+          Adapts to the athlete's existing zone count and names:
+          - If the athlete already has N pace zones: writes N new boundaries,
+            keeping the same zone names.
+          - If no zones exist yet: defaults to 5 zones (Garmin standard).
+          Never call with force=True speculatively — only when the athlete asks.
 
-        Computed zones use Garmin's 5-zone model extended with a 6th anaerobic zone,
-        as percentages of threshold SPEED:
-
-          Z1 Recovery     < 78% threshold speed   (easy jogging)
-          Z2 Endurance   78–86% threshold speed   (aerobic base)
-          Z3 Tempo       86–93% threshold speed   (comfortably hard)
-          Z4 Threshold   93–100% threshold speed  (lactate threshold)
-          Z5 VO2max     100–108% threshold speed  (near-maximal)
-          Z6 Anaerobic  108–115% threshold speed  (sprint/max effort)
-
-        Z1–Z4 match Garmin's auto-calculated zone boundaries exactly, so intervals.icu
-        and Garmin zone analysis will agree. Z5/Z6 split the above-threshold range.
+        Zone boundaries are computed as % of threshold SPEED (not pace), so
+        faster threshold = proportionally faster zones throughout. The breakpoints
+        align with Garmin's auto-calculated zone boundaries for common zone counts.
 
         Args:
-            threshold_pace_min_per_km: Threshold pace for zone computation (force=True only).
-                                       If omitted, reads from stored running_threshold_pace.
-            force:                     Set True to overwrite existing zones. Default False
-                                       (read-only — inspect before changing).
+            threshold_pace_min_per_km: Threshold pace for computation (force=True only).
+                                       If omitted, uses the stored threshold pace.
+            force:                     Set True to overwrite existing zones.
         """
         athlete = await icu_get(f"athlete/{ATHLETE_ID}")
         sport_settings = athlete.get("sportSettings") or []
 
         run_ss: dict = {}
         existing_zones: list[float] = []
+        existing_names: list[str] = []
         stored_threshold: float | None = None
         for ss in sport_settings:
             if ss.get("activity_type") == "Run":
@@ -1395,16 +1417,20 @@ if not READ_ONLY:
                     stored_threshold = _ms_to_min_per_km(ss["threshold_pace"])
                 if ss.get("pace_zones"):
                     existing_zones = [_ms_to_min_per_km(v) for v in ss["pace_zones"] if v]
+                if ss.get("pace_zone_names"):
+                    existing_names = ss["pace_zone_names"]
                 break
 
         if existing_zones and not force:
             return {
                 "status": "already_configured",
                 "message": "Pace zones are already set in intervals.icu. Pass force=True to overwrite.",
+                "zone_count": len(existing_zones),
+                "zone_names": existing_names,
                 "threshold_pace": _format_pace(stored_threshold) if stored_threshold else None,
                 "current_zones": {
-                    f"Z{i+1}": {"upper_boundary": _format_pace(z)} if z else None
-                    for i, z in enumerate(existing_zones)
+                    name: {"upper_boundary": _format_pace(z)}
+                    for name, z in zip(existing_names or [f"Z{i+1}" for i in range(len(existing_zones))], existing_zones)
                 },
             }
 
@@ -1412,22 +1438,31 @@ if not READ_ONLY:
         if not threshold:
             return {"error": "No threshold pace available. Pass threshold_pace_min_per_km or set it via update_sport_settings first."}
 
-        t_ms = _min_km_to_ms(threshold)
-        zone_pcts = [0.78, 0.86, 0.93, 1.00, 1.08, 1.15]
-        zone_ms   = [round(pct * t_ms, 6) for pct in zone_pcts]
+        # Determine zone count: honour athlete's existing count, fall back to 5
+        n = len(existing_zones) or len(existing_names) or 5
+        pcts = _PACE_ZONE_PCTS.get(n) or _PACE_ZONE_PCTS[5]
+        # Reuse existing zone names if count matches, else generate defaults
+        names = existing_names if len(existing_names) == n else _PACE_ZONE_NAME_DEFAULTS[:n]
+
+        t_ms    = _min_km_to_ms(threshold)
+        zone_ms = [round(pct * t_ms, 6) for pct in pcts]
         zone_paces = [_ms_to_min_per_km(z) for z in zone_ms]
 
-        # Merge into the full current settings object — pace/HR zone PUTs are
-        # full-replace on the server, so omitting fields would wipe them (e.g.
-        # sending only pace_zones would clear LTHR and threshold_pace).
-        result = await icu_put(f"athlete/{ATHLETE_ID}/sport-settings/Run", {**run_ss, "pace_zones": zone_ms})
+        # Merge into full current settings — pace zone PUTs are full-replace on the
+        # server, so omitting any field would wipe it (LTHR, threshold_pace, etc.)
+        result = await icu_put(f"athlete/{ATHLETE_ID}/sport-settings/Run", {
+            **run_ss,
+            "pace_zones": zone_ms,
+            "pace_zone_names": names,
+        })
 
         return {
             "status": "written",
+            "zone_count": n,
             "threshold_pace": _format_pace(threshold),
             "zones_written": {
-                f"Z{i+1}": {"upper_boundary": _format_pace(zone_paces[i]), "pct_threshold": int(zone_pcts[i]*100)}
-                for i in range(6)
+                names[i]: {"upper_boundary": _format_pace(zone_paces[i]), "pct_threshold_speed": int(pcts[i] * 100)}
+                for i in range(n)
             },
             "result": result,
         }
