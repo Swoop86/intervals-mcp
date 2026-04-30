@@ -756,6 +756,23 @@ if not READ_ONLY:
         ─────────────────────────────────────────
         Examples use threshold=5:00/km, LTHR=165bpm. Recompute for actual athlete.
 
+        WARMUP / COOLDOWN RULE
+        ─────────────────────────────────────────
+        Always use 65–72% LTHR (Z1) for warmup and cooldown — even before quality
+        sessions. Z2 warmup feels identical to the main set on easy days (no perceived
+        transition) and pre-fatigues the athlete before hard sessions. Z1 gives a
+        clear perceptible shift when you step up into the main set.
+
+        INTERVAL STRUCTURE — work:rest ratios by type
+        ─────────────────────────────────────────
+          Strides (neuromuscular): 25–30s work / 60s rest (1:2 ratio)
+            Do NOT use 20s (too short to reach and hold target speed)
+            Do NOT use 90s rest (too long — athlete cools down between reps)
+          VO2max:          3–5min work / equal rest      (1:1 ratio)
+          Threshold/Cruise: 5–10min continuous blocks / 60–90s rest
+          Tempo:           continuous 20–40min block, no rest intervals
+          Hill repeats:    45–90s work / 90s–2min rest  (1:1 to 1:2 ratio)
+
         Easy / Recovery  (RPE 2–3):
             Warmup\\n- 5m 65-72% LTHR\\n\\nMain Set\\n- 40m 72-80% LTHR\\n\\nCooldown\\n- 5m 65-72% LTHR
 
@@ -763,22 +780,22 @@ if not READ_ONLY:
             Main Set\\n- 90m 72-80% LTHR
 
         Aerobic with strides:
-            Main Set\\n- 35m 72-80% LTHR\\n\\nStrides 4x\\n- 20s 4:10-4:22/km Pace\\n- 90s 65-72% LTHR
+            Main Set\\n- 35m 72-80% LTHR\\n\\nStrides 4x\\n- 25s 4:10-4:22/km Pace\\n- 60s 65-72% LTHR
 
         Tempo run  (comfortably hard, 20–40min, RPE 6–7):
-            Warmup\\n- 15m 72-80% LTHR\\n\\nMain Set\\n- 25m 5:33-5:53/km Pace\\n\\nCooldown\\n- 10m 72-78% LTHR
+            Warmup\\n- 15m 65-72% LTHR\\n\\nMain Set\\n- 25m 5:33-5:53/km Pace\\n\\nCooldown\\n- 10m 65-72% LTHR
 
         Threshold / Cruise intervals  (RPE 7–8):
-            Warmup\\n- 15m 72-80% LTHR\\n\\nMain Set 4x\\n- 8m 5:09-5:22/km Pace\\n- 90s 65-72% LTHR\\n\\nCooldown\\n- 10m 72-80% LTHR
+            Warmup\\n- 15m 65-72% LTHR\\n\\nMain Set 4x\\n- 8m 5:09-5:22/km Pace\\n- 90s 65-72% LTHR\\n\\nCooldown\\n- 10m 65-72% LTHR
 
         VO2max intervals  (near-maximal, RPE 9):
-            Warmup\\n- 15m 72-80% LTHR\\n\\nMain Set 6x\\n- 3m 4:33-4:46/km Pace\\n- 3m 65-72% LTHR\\n\\nCooldown\\n- 10m 72-80% LTHR
+            Warmup\\n- 15m 65-72% LTHR\\n\\nMain Set 6x\\n- 3m 4:33-4:46/km Pace\\n- 3m 65-72% LTHR\\n\\nCooldown\\n- 10m 65-72% LTHR
 
         Marathon-pace run:
-            Warmup\\n- 20m 72-78% LTHR\\n\\nAerobic\\n- 40m 72-80% LTHR\\n\\nMarathon Pace\\n- 20m 6:06-6:25/km Pace\\n\\nCooldown\\n- 10m 72-78% LTHR
+            Warmup\\n- 20m 65-72% LTHR\\n\\nAerobic\\n- 40m 72-80% LTHR\\n\\nMarathon Pace\\n- 20m 6:06-6:25/km Pace\\n\\nCooldown\\n- 10m 65-72% LTHR
 
         Hill repeats  (power/strength):
-            Warmup\\n- 15m 72-80% LTHR\\n\\nMain Set 8x\\n- 60s 4:21-4:46/km Pace\\n- 90s 65-72% LTHR walk\\n\\nCooldown\\n- 10m 72-80% LTHR
+            Warmup\\n- 15m 65-72% LTHR\\n\\nMain Set 8x\\n- 60s 4:21-4:46/km Pace\\n- 90s 65-72% LTHR walk\\n\\nCooldown\\n- 10m 65-72% LTHR
 
         METHODOLOGY NOTES
         ─────────────────────────────────────────
@@ -797,6 +814,25 @@ if not READ_ONLY:
         Repeats:         Nx on its own line before the steps (blank lines around block)
         Sections:        Warmup / Main Set / Cooldown on their own lines
 
+        DISTANCE AND DURATION — always pass both
+        ─────────────────────────────────────────
+        Always estimate and pass moving_time and distance_km for every workout.
+        They show in the intervals.icu calendar so the athlete can see what to expect.
+
+        Estimate distance_km from step durations × expected pace:
+          Sum each step: (duration_seconds / pace_sec_per_km) = km
+          Easy step 40min at 6:15/km  → 40×60 / 375 = 6.4 km
+          Tempo step 25min at 5:40/km → 25×60 / 340 = 4.4 km
+          Add all steps → total distance_km (round to 1 decimal)
+
+        Pace sec/km quick reference (threshold=5:00/km = 300 s/km):
+          Easy/aerobic  6:00–7:00/km  → 360–420 s/km
+          Tempo         5:33–5:53/km  → 333–353 s/km
+          Threshold     5:09–5:22/km  → 309–322 s/km
+          VO2max        4:33–4:46/km  → 273–286 s/km
+          Strides       4:10–4:22/km  → 250–262 s/km
+        Recompute for the athlete's actual threshold pace.
+
         WEEKLY TARGET — always call set_weekly_target after creating a workout
         ─────────────────────────────────────────
         intervals.icu tracks actual vs target each week. After every create_workout
@@ -812,8 +848,8 @@ if not READ_ONLY:
             sport_type:   Run, Ride, Swim, etc. (default Run)
             category:     WORKOUT (default), RACE, NOTES, TARGET,
                           FITNESS_DAYS, SET_FITNESS, or SET_EFTP
-            moving_time:  Estimated duration in seconds (sum of all step durations)
-            distance_km:  Target distance in kilometres (e.g. 10.0 for a 10 km run)
+            moving_time:  Estimated duration in seconds — always pass this
+            distance_km:  Estimated distance in km — always pass this
             target_tss:   Target Training Stress Score
         """
         payload = {
@@ -1141,14 +1177,19 @@ if not READ_ONLY:
         ─────────────────────────────────────────
         Examples use threshold=5:00/km. Recompute for actual athlete.
 
+        WARMUP/COOLDOWN: always 65–72% LTHR (Z1) — do NOT use 72-80% for warmup,
+        it overlaps with the easy main set and pre-fatigues before quality efforts.
+        STRIDES: 25–30s / 60s rest (1:2). Do NOT use 20s/90s — too short, too long.
+        INTERVALS: VO2max 1:1, threshold cruise 4:1, hill repeats 1:1–1:2.
+
         Easy/Recovery:   "Warmup\\n- 5m 65-72% LTHR\\n\\nMain Set\\n- 40m 72-80% LTHR\\n\\nCooldown\\n- 5m 65-72% LTHR"
         Long run:        "Main Set\\n- 90m 72-80% LTHR"
-        Strides:         "Main Set\\n- 35m 72-80% LTHR\\n\\nStrides 4x\\n- 20s 4:10-4:22/km Pace\\n- 90s 65-72% LTHR"
-        Tempo run:       "Warmup\\n- 15m 72-80% LTHR\\n\\nMain Set\\n- 25m 5:33-5:53/km Pace\\n\\nCooldown\\n- 10m 72-78% LTHR"
-        Threshold/Cruise:"Warmup\\n- 15m 72-80% LTHR\\n\\nMain Set 4x\\n- 8m 5:09-5:22/km Pace\\n- 90s 65-72% LTHR\\n\\nCooldown\\n- 10m 72-80% LTHR"
-        VO2max:          "Warmup\\n- 15m 72-80% LTHR\\n\\nMain Set 6x\\n- 3m 4:33-4:46/km Pace\\n- 3m 65-72% LTHR\\n\\nCooldown\\n- 10m 72-80% LTHR"
-        Hill repeats:    "Warmup\\n- 15m 72-80% LTHR\\n\\nMain Set 8x\\n- 60s 4:21-4:46/km Pace\\n- 90s 65-72% LTHR walk\\n\\nCooldown\\n- 10m 72-80% LTHR"
-        Marathon pace:   "Warmup\\n- 20m 72-78% LTHR\\n\\nAerobic\\n- 40m 72-80% LTHR\\n\\nMarathon Pace\\n- 20m 6:06-6:25/km Pace\\n\\nCooldown\\n- 10m 72-78% LTHR"
+        Strides:         "Main Set\\n- 35m 72-80% LTHR\\n\\nStrides 4x\\n- 25s 4:10-4:22/km Pace\\n- 60s 65-72% LTHR"
+        Tempo run:       "Warmup\\n- 15m 65-72% LTHR\\n\\nMain Set\\n- 25m 5:33-5:53/km Pace\\n\\nCooldown\\n- 10m 65-72% LTHR"
+        Threshold/Cruise:"Warmup\\n- 15m 65-72% LTHR\\n\\nMain Set 4x\\n- 8m 5:09-5:22/km Pace\\n- 90s 65-72% LTHR\\n\\nCooldown\\n- 10m 65-72% LTHR"
+        VO2max:          "Warmup\\n- 15m 65-72% LTHR\\n\\nMain Set 6x\\n- 3m 4:33-4:46/km Pace\\n- 3m 65-72% LTHR\\n\\nCooldown\\n- 10m 65-72% LTHR"
+        Hill repeats:    "Warmup\\n- 15m 65-72% LTHR\\n\\nMain Set 8x\\n- 60s 4:21-4:46/km Pace\\n- 90s 65-72% LTHR walk\\n\\nCooldown\\n- 10m 65-72% LTHR"
+        Marathon pace:   "Warmup\\n- 20m 65-72% LTHR\\n\\nAerobic\\n- 40m 72-80% LTHR\\n\\nMarathon Pace\\n- 20m 6:06-6:25/km Pace\\n\\nCooldown\\n- 10m 65-72% LTHR"
 
         METHODOLOGY NOTES
         ─────────────────────────────────────────
@@ -1167,6 +1208,17 @@ if not READ_ONLY:
         Repeats:         Nx on its own line before the steps (blank lines around block)
         Sections:        Warmup / Main Set / Cooldown on their own lines
 
+        DISTANCE AND DURATION — always include both for every workout in the plan
+        ─────────────────────────────────────────
+        Always pass moving_time (seconds) and distance_km for every workout.
+        They appear in the intervals.icu calendar so the athlete knows what to expect.
+
+        Estimate distance_km by summing steps: duration_seconds / pace_sec_per_km
+          Easy step 40min at 6:15/km  → 2400 / 375 = 6.4 km
+          Tempo step 25min at 5:40/km → 1500 / 340 = 4.4 km
+        Round to 1 decimal. Use the workout's start_date_local key as "distance_km"
+        (the bulk endpoint accepts distance_km and converts automatically).
+
         WEEKLY TARGETS — always call set_weekly_target for each week in the plan
         ─────────────────────────────────────────
         After creating workouts, call set_weekly_target once per week covered by the
@@ -1176,6 +1228,8 @@ if not READ_ONLY:
 
         Args:
             workouts: List of workout objects to create on the calendar.
+                      Each object may include distance_km (converted to metres)
+                      and moving_time (seconds) — always provide both.
         """
         _PLAN_FIELDS = frozenset({
             "start_date_local", "name", "type", "category", "description",
