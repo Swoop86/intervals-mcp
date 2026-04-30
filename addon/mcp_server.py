@@ -691,11 +691,12 @@ if not READ_ONLY:
         DESCRIPTION SYNTAX — always use this structured format.
         intervals.icu parses it and creates step-by-step Garmin guidance.
 
-        BEFORE WRITING ANY TARGETS — call get_athlete first (required)
+        BEFORE WRITING ANY TARGETS — required pre-flight calls
         ─────────────────────────────────────────
-        get_athlete → running_threshold_pace_min_per_km, run_lthr_bpm,
-                      running_pace_zones_min_per_km (athlete's configured zones, if set)
-        get_profile → fallback if get_athlete returns nothing
+        1. review_training — current CTL/ATL/TSB, recent load, athlete zones
+        2. get_athlete — running_threshold_pace_min_per_km, run_lthr_bpm,
+           running_pace_zones_min_per_km (athlete's configured zones, if set)
+        3. get_profile — preferences only; empty profile is normal, NOT a blocker
 
         COMPUTING PACE TARGETS (quality sessions: tempo, threshold, VO2max, strides)
         ─────────────────────────────────────────
@@ -910,6 +911,9 @@ async def review_training(activity_id: str = "") -> dict:
     - Check how they are recovering
     - Analyse fitness trends (CTL, ATL, form)
     - Decide whether to adjust the plan
+    - Create a training plan or programme — ALWAYS call this first to establish
+      current fitness baseline (CTL/ATL), recent training load, and athlete zones
+      before writing any workout targets
 
     For longer-term progress questions ("am I improving?", "is my training working?",
     "recommend a training program") also call get_progress to get monthly trend data
@@ -1107,11 +1111,15 @@ if not READ_ONLY:
             distance_km       Target distance in kilometres — converted to metres automatically
             icu_training_load Target TSS
 
-        BEFORE WRITING ANY TARGETS — call get_athlete first (required)
+        BEFORE WRITING ANY TARGETS — required pre-flight calls
         ─────────────────────────────────────────
-        get_athlete → running_threshold_pace_min_per_km, run_lthr_bpm,
-                      running_pace_zones_min_per_km (athlete's configured zones, if set)
-        get_profile → fallback if get_athlete returns nothing
+        1. review_training — current CTL/ATL/TSB, recent 28-day load, athlete zones,
+           upcoming planned workouts. This is the primary context for plan creation.
+        2. get_athlete — running_threshold_pace_min_per_km, run_lthr_bpm,
+           running_pace_zones_min_per_km (athlete's configured zones, if set)
+        3. get_profile — local preferences (timezone, methodology); may be empty,
+           that is normal — do NOT treat empty profile as a reason to stop
+        Also call get_planned_workouts to check for existing calendar conflicts.
 
         COMPUTING PACE TARGETS (quality sessions: tempo, threshold, VO2max, strides)
         ─────────────────────────────────────────
@@ -1555,12 +1563,58 @@ if not READ_ONLY:
 
 @mcp.tool()
 async def get_profile() -> dict:
-    """Return the stored athlete profile (training preferences, paces, limiters).
+    """Return a complete athlete context for planning: local preferences merged
+    with live fitness data from intervals.icu.
 
-    Use update_profile to change any field. Use set_race_goal to switch into
+    Automatically fetches FTP, LTHR, threshold pace, and HR zones from
+    intervals.icu so planning can proceed even if local preferences are empty.
+    Never treat an empty local profile as a reason to stop — always continue
+    with the intervals.icu data that is returned here.
+
+    Returns a merged dict including:
+      - Local preferences (timezone, coaching methodology, training days, notes)
+      - Live intervals.icu fitness data (FTP, LTHR, pace zones, weight, HR zones)
+      - missing_for_planning: fields Claude should ask the athlete to confirm
+        before creating a multi-week plan (age, timezone, training availability)
+
+    Use update_profile to persist preferences. Use set_race_goal to switch into
     event-prep (periodized) coaching mode.
     """
-    return _load_profile()
+    profile = _load_profile()
+
+    # Enrich with live intervals.icu athlete data
+    try:
+        icu_data = await icu_get(f"athlete/{ATHLETE_ID}")
+        if isinstance(icu_data, dict):
+            _extract_sport_zones(icu_data)
+            # Merge: prefer locally-stored preferences, fill blanks from intervals.icu
+            for key in ("running_threshold_pace_min_per_km", "run_lthr_bpm",
+                        "run_hr_zones_labeled", "run_hr_zone_method",
+                        "cycling_ftp_watts", "ride_lthr_bpm",
+                        "run_max_hr_bpm", "running_pace_zones_min_per_km"):
+                if key in icu_data and profile.get(key) is None:
+                    profile[key] = icu_data[key]
+            for key in ("weight", "sex", "dob"):
+                if icu_data.get(key) and not profile.get(key):
+                    profile[key] = icu_data[key]
+    except Exception:
+        pass
+
+    # Surface what still needs to be confirmed by the athlete before plan creation
+    missing = []
+    if not profile.get("age") and not profile.get("dob"):
+        missing.append("age — needed to estimate max HR and set appropriate training zones")
+    if not profile.get("timezone"):
+        missing.append("timezone — needed for correct workout day/time scheduling")
+    if not profile.get("training_days_per_week"):
+        missing.append("how many days per week available to train")
+    if not profile.get("run_lthr_bpm"):
+        missing.append("LTHR (lactate threshold HR) — check Garmin Performance Stats → Lactate Threshold; call update_sport_settings to store it")
+
+    if missing:
+        profile["missing_for_planning"] = missing
+
+    return profile
 
 
 if not READ_ONLY:
