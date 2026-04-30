@@ -820,19 +820,24 @@ if not READ_ONLY:
         Always estimate and pass moving_time and distance_km for every workout.
         They show in the intervals.icu calendar so the athlete can see what to expect.
 
-        Estimate distance_km from step durations × expected pace:
-          Sum each step: (duration_seconds / pace_sec_per_km) = km
-          Easy step 40min at 6:15/km  → 40×60 / 375 = 6.4 km
-          Tempo step 25min at 5:40/km → 25×60 / 340 = 4.4 km
-          Add all steps → total distance_km (round to 1 decimal)
+        Estimate distance_km by summing all steps.
+        Formula per step: distance_km = duration_min / pace_min_per_km
 
-        Pace sec/km quick reference (threshold=5:00/km = 300 s/km):
-          Easy/aerobic  6:00–7:00/km  → 360–420 s/km
-          Tempo         5:33–5:53/km  → 333–353 s/km
-          Threshold     5:09–5:22/km  → 309–322 s/km
-          VO2max        4:33–4:46/km  → 273–286 s/km
-          Strides       4:10–4:22/km  → 250–262 s/km
-        Recompute for the athlete's actual threshold pace.
+        Pace multipliers from the athlete's actual threshold T (min/km):
+          Easy/aerobic   T × 1.25–1.40   T=5:00→6:15–7:00/km   T=5:30→6:52–7:42/km
+          Warmup/cooldown T × 1.30       T=5:00→6:30/km         T=5:30→7:09/km
+          Tempo          T × 1.11–1.18   T=5:00→5:33–5:53/km   T=5:30→6:06–6:29/km
+          Threshold      T × 1.03–1.08   T=5:00→5:09–5:24/km   T=5:30→5:41–5:56/km
+          VO2max         T × 0.91–0.96   T=5:00→4:33–4:48/km   T=5:30→5:00–5:17/km
+          Strides        T × 0.83–0.87   T=5:00→4:10–4:21/km   T=5:30→4:35–4:47/km
+
+        ALWAYS use the athlete's T from get_athlete — do not use the example values above.
+
+        Worked example (T = 5:30/km):
+          15 min warmup  at 7:09/km  → 15 / 7.15 = 2.1 km
+          25 min tempo   at 6:10/km  → 25 / 6.17 = 4.1 km
+          10 min cooldown at 7:09/km → 10 / 7.15 = 1.4 km
+          Total distance_km = 7.6
 
         WEEKLY TARGET — always call set_weekly_target after creating a workout
         ─────────────────────────────────────────
@@ -1041,6 +1046,7 @@ if not READ_ONLY:
         name: str | None = None,
         description: str | None = None,
         moving_time: int | None = None,
+        distance_km: float | None = None,
         target_tss: float | None = None,
         date: str | None = None,
     ) -> dict:
@@ -1053,6 +1059,7 @@ if not READ_ONLY:
             name: New workout name
             description: New description with structure/targets
             moving_time: New estimated duration in seconds
+            distance_km: Estimated distance in kilometres
             target_tss: New target Training Stress Score
             date: New date as ISO YYYY-MM-DD (reschedule; time component added automatically)
         """
@@ -1063,6 +1070,8 @@ if not READ_ONLY:
             payload["description"] = description
         if moving_time is not None:
             payload["moving_time"] = moving_time
+        if distance_km is not None:
+            payload["distance"] = round(distance_km * 1000)
         if target_tss is not None:
             payload["icu_training_load"] = target_tss
         if date is not None:
@@ -1221,11 +1230,13 @@ if not READ_ONLY:
         Always pass moving_time (seconds) and distance_km for every workout.
         They appear in the intervals.icu calendar so the athlete knows what to expect.
 
-        Estimate distance_km by summing steps: duration_seconds / pace_sec_per_km
-          Easy step 40min at 6:15/km  → 2400 / 375 = 6.4 km
-          Tempo step 25min at 5:40/km → 1500 / 340 = 4.4 km
-        Round to 1 decimal. Use the workout's start_date_local key as "distance_km"
-        (the bulk endpoint accepts distance_km and converts automatically).
+        Estimate distance_km per step: duration_min / pace_min_per_km, then sum.
+        Use pace multipliers from the athlete's threshold T (get_athlete):
+          Easy/warmup/cooldown  T × 1.30    Tempo  T × 1.14
+          Threshold             T × 1.05    VO2max T × 0.93    Strides T × 0.85
+        ALWAYS use the athlete's actual T — never use example values.
+        Example T=5:30: 15 min wu(7:09) + 25 min tempo(6:16) + 10 min cd(7:09)
+          → 15/7.15 + 25/6.27 + 10/7.15 = 2.1 + 4.0 + 1.4 = 7.5 km
 
         WEEKLY TARGETS — always call set_weekly_target for each week in the plan
         ─────────────────────────────────────────
