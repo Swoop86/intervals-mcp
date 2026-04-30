@@ -723,30 +723,34 @@ if not READ_ONLY:
             fast: 5.0 × 100/90 = 5.555 → 5:33/km
             slow: 5.0 × 100/85 = 5.882 → 5:53/km  →  "5:33-5:53/km Pace"
 
-        HR TARGETS — use configured zone ranges, never compute from scratch
+        HR TARGETS — use %LTHR in step targets (auto-adjusts with LTHR updates)
         ─────────────────────────────────────────
-        athlete_zones.run_hr_zones_labeled (from review_training) contains
-        pre-computed ranges that reflect the athlete's zone methodology (Garmin,
-        Olympiatoppen, CTS, etc.) and LTHR. Example for LTHR 165, Olympiatoppen:
-          Z1: 0–119 bpm  (0–72% LTHR)
-          Z2: 119–135 bpm (72–82% LTHR)
-          Z3: 135–144 bpm (82–87% LTHR)
-          Z4: 144–152 bpm (87–92% LTHR)
-          Z5: 152–165 bpm (92–100% LTHR)
+        Use %LTHR as the step target. intervals.icu resolves it to absolute BPM
+        at Garmin sync time using the stored LTHR — the watch face shows the same
+        "Garmin Coach" style BPM display regardless. Advantage: when Garmin detects
+        an LTHR change and you update it via update_sport_settings, ALL upcoming
+        %LTHR workouts auto-recalculate on the next sync without manual edits.
 
-        Always express HR as absolute BPM in the workout description:
-          "119–135 bpm"      ← correct; unambiguous on any watch
-          "Z2" or "S2" alone ← WRONG; zone labels differ across systems
-          Add %LTHR for context: "119–135 bpm (72–82% LTHR)"
+        Read %LTHR boundaries from athlete_zones.run_hr_zones_labeled — they
+        reflect the athlete's configured zone methodology (Garmin, Olympiatoppen,
+        CTS, etc.). Never invent zone percentages from scratch.
 
-        If run_hr_zones_labeled is absent: call update_sport_settings(
-          sport="Run", lthr_bpm=X, recalc_hr_zones=True) to set LTHR and
-          recalculate zones — they sync to Garmin automatically. The athlete
-          does NOT need to change anything in Garmin Connect.
+        Step target format:
+          "72-82% LTHR"        ← correct — resolves to BPM at sync, auto-adjusts
+          "119-135 bpm"        ← static — stale after LTHR update
+          "Z2" or "S2" alone   ← WRONG — zone labels differ across systems
 
-        ONE TARGET PER STEP — pace OR HR (bpm), never both on the same line.
+        Add a BPM annotation in the workout name or section header so the athlete
+        can read current targets in the intervals.icu calendar:
+          "Main Set (72-82% LTHR = 119-135 bpm)"  or just note at top of description:
+          "Targets at LTHR 165: easy=119-135 bpm, threshold=152-160 bpm"
+
+        If run_hr_zones_labeled is absent: LTHR is not set. Prompt for it first,
+        then call update_sport_settings(sport="Run", lthr_bpm=X, recalc_hr_zones=True).
+
+        ONE TARGET PER STEP — pace OR %LTHR, never both on the same line.
           Quality steps (tempo/threshold/VO2max/strides) → absolute pace
-          All other steps (easy, warmup, cooldown, recovery) → bpm range
+          All other steps (easy, warmup, cooldown, recovery) → %LTHR
 
         RUNNING WORKOUT TYPES
         ─────────────────────────────────────────
@@ -951,19 +955,27 @@ async def review_training(activity_id: str = "") -> dict:
 
     7. Current training phase (Base/Build/Peak/Taper) and plan adjustments
 
-    8. Threshold drift check (check when reviewing hard/race activities)
-       Each hard or race activity may include:
+    8. LTHR drift check (run on every review, not just hard/race activities)
+       Each activity may include:
          lthr_detected_bpm           — Garmin-detected LTHR for that effort
          lt_pace_detected_min_per_km — Garmin-detected threshold pace
        Compare against athlete_zones.run_lthr_bpm and
        athlete_zones.running_threshold_pace_min_per_km.
 
-       Suggest calling update_sport_settings when:
+       Why this matters: workouts use %LTHR targets. When Garmin raises the athlete's
+       LTHR (fitness improving), the stored value in intervals.icu may lag behind.
+       Updating LTHR via update_sport_settings(recalc_hr_zones=True) causes ALL
+       upcoming %LTHR workouts to auto-recalculate on the next Garmin sync — no
+       manual workout edits needed. This is the key benefit of %LTHR targets.
+
+       Flag proactively (even without being asked) when:
          - lthr_detected_bpm differs from stored LTHR by ≥3 bpm across ≥2 sessions
          - lt_pace_detected_min_per_km differs from stored threshold pace by ≥0:10/km
            across ≥2 sessions
          - After a race or structured time trial that serves as a threshold benchmark
        Always confirm with the athlete before updating.
+       If LTHR data is absent for most activities, remind athlete to enable
+       Garmin Firstbeat Lactate Threshold detection (requires recent ≥20 min hard effort).
 
     IMPORTANT: Use compound patterns — do not recommend rest based on a single
     metric spike. Require multiple signals before major load changes.
@@ -1091,20 +1103,39 @@ if not READ_ONLY:
             fast: 5.0 × 100/90 = 5.555 → 5:33/km
             slow: 5.0 × 100/85 = 5.882 → 5:53/km  →  "5:33-5:53/km Pace"
 
-        COMPUTING HR TARGETS (easy runs, warmup, cooldown, recovery intervals)
+        HR TARGETS — use %LTHR in step targets (auto-adjusts with LTHR updates)
         ─────────────────────────────────────────
-        Use "% LTHR" — DO NOT use Z1–Z5 HR (Garmin's zone numbers may not match).
+        Use %LTHR as the step target. intervals.icu resolves it to absolute BPM
+        at Garmin sync time using the stored LTHR — the watch face shows the same
+        "Garmin Coach" style BPM display regardless. Advantage: when Garmin detects
+        an LTHR change and you update it via update_sport_settings, ALL upcoming
+        %LTHR workouts auto-recalculate on the next sync without manual edits.
+
+        Read %LTHR boundaries from athlete_zones.run_hr_zones_labeled — they
+        reflect the athlete's configured zone methodology (Garmin, Olympiatoppen,
+        CTS, etc.). Never invent zone percentages from scratch.
 
           Recovery / rest interval   65–72% LTHR
           Easy / aerobic             72–80% LTHR
           Steady / upper aerobic     80–87% LTHR   (use for warmup before quality)
           Threshold / hard           90–95% LTHR
 
-        Fallback only: use Z1–Z5 HR if run_lthr_bpm is unavailable.
+        Step target format:
+          "72-82% LTHR"        ← correct — resolves to BPM at sync, auto-adjusts
+          "119-135 bpm"        ← static — stale after LTHR update
+          "Z2" or "S2" alone   ← WRONG — zone labels differ across systems
 
-        ONE TARGET PER STEP — pace OR % LTHR, never both on the same line.
+        Add a BPM annotation in the workout name or section header so the athlete
+        can read current targets in the intervals.icu calendar:
+          "Main Set (72-82% LTHR = 119-135 bpm)"  or just note at top of description:
+          "Targets at LTHR 165: easy=119-135 bpm, threshold=152-160 bpm"
+
+        If run_hr_zones_labeled is absent: LTHR is not set. Prompt for it first,
+        then call update_sport_settings(sport="Run", lthr_bpm=X, recalc_hr_zones=True).
+
+        ONE TARGET PER STEP — pace OR %LTHR, never both on the same line.
           Quality steps (tempo/threshold/VO2max/strides) → absolute pace
-          All other steps (easy, warmup, cooldown, recovery) → % LTHR
+          All other steps (easy, warmup, cooldown, recovery) → %LTHR
 
         RUNNING WORKOUT TYPES AND DESCRIPTION SYNTAX
         ─────────────────────────────────────────
