@@ -1312,6 +1312,7 @@ if not READ_ONLY:
         monday_str = monday.strftime("%Y-%m-%d")
         payload: dict = {
             "start_date_local": f"{monday_str}T00:00:00",
+            "name": f"{sport} Target",
             "type": sport,
             "category": "TARGET",
         }
