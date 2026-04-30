@@ -454,6 +454,7 @@ def _compute_readiness_metrics(wellness: list[dict], activities: list[dict]) -> 
 
 
 def _clean_planned(e: dict) -> dict:
+    dist_m = e.get("distance") or e.get("icu_distance") or 0
     return {
         "id": e.get("id"),
         "date": e.get("start_date_local", "")[:10],
@@ -462,6 +463,7 @@ def _clean_planned(e: dict) -> dict:
         "description": e.get("description", ""),
         "target_tss": e.get("icu_training_load"),
         "duration_min": round(e.get("moving_time", 0) / 60, 1) if e.get("moving_time") else None,
+        "distance_km": round(dist_m / 1000, 1) if dist_m else None,
     }
 
 

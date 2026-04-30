@@ -820,6 +820,11 @@ if not READ_ONLY:
         Always estimate and pass moving_time and distance_km for every workout.
         They show in the intervals.icu calendar so the athlete can see what to expect.
 
+        NOTE: the create API response may return distance=0 for time-based workouts.
+        This is normal — intervals.icu's workout parser computes 0 for steps that use
+        duration rather than distance. The planned distance IS stored and visible in the
+        calendar view. Do NOT delete and recreate workouts because the response shows 0.
+
         Estimate distance_km by summing all steps.
         Formula per step: distance_km = duration_min / pace_min_per_km
 
@@ -1229,6 +1234,8 @@ if not READ_ONLY:
         ─────────────────────────────────────────
         Always pass moving_time (seconds) and distance_km for every workout.
         They appear in the intervals.icu calendar so the athlete knows what to expect.
+        NOTE: the API response may show distance=0 for time-based workouts — this is
+        normal. Do NOT delete and recreate workouts because the response shows 0.
 
         Estimate distance_km per step: duration_min / pace_min_per_km, then sum.
         Use pace multipliers from the athlete's threshold T (get_athlete):
