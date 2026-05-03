@@ -189,10 +189,37 @@ async def icu_delete(client: httpx.AsyncClient, path: str) -> None:
 # ---------------------------------------------------------------------------
 # Context fetching
 # ---------------------------------------------------------------------------
-def _extract_athlete_zones(athlete_data: dict) -> dict:
-    """Pull coaching-relevant zone data out of sportSettings into a flat dict."""
-    import math as _math
+def _label_hr_zones(lthr: int | None, zone_uppers: list) -> list[dict]:
+    """Compute labeled HR zone entries from upper-boundary BPM list + LTHR.
 
+    Mirrors the same function in mcp_server.py — keep in sync.
+    """
+    labeled = []
+    lower = 0
+    for i, upper in enumerate(zone_uppers, start=1):
+        entry: dict = {
+            "zone": f"Z{i}",
+            "min_bpm": lower,
+            "max_bpm": upper,
+            "range_bpm": f"{lower}–{upper}",
+        }
+        if lthr:
+            min_pct = round(lower / lthr * 100) if lower > 0 else 0
+            max_pct = round(upper / lthr * 100)
+            entry["min_pct_lthr"] = min_pct
+            entry["max_pct_lthr"] = max_pct
+            entry["range_pct_lthr"] = f"{min_pct}–{max_pct}% LTHR"
+        labeled.append(entry)
+        lower = upper
+    return labeled
+
+
+def _extract_athlete_zones(athlete_data: dict) -> dict:
+    """Pull coaching-relevant zone data out of sportSettings into a flat dict.
+
+    Produces the same field names as mcp_server._extract_sport_zones so that
+    athlete_zones in review_training is consistent with what get_athlete returns.
+    """
     def ms_to_min_km(v):
         return round(1000 / (v * 60), 2) if v and v > 0 else None
 
@@ -210,12 +237,22 @@ def _extract_athlete_zones(athlete_data: dict) -> dict:
         if not sport:
             continue
         p = sport.lower()
-        if ss.get("lthr"):
-            zones[f"{p}_lthr_bpm"] = ss["lthr"]
+        lthr = ss.get("lthr")
+        if lthr:
+            zones[f"{p}_lthr_bpm"] = lthr
         if ss.get("max_heart_rate"):
             zones[f"{p}_max_hr_bpm"] = ss["max_heart_rate"]
-        if ss.get("zones_heart_rate"):
-            zones[f"{p}_hr_zones_bpm"] = ss["zones_heart_rate"]
+        zone_method = (
+            ss.get("heartRateZoneMethod")
+            or ss.get("hr_zone_method")
+            or ss.get("zoneMethod")
+        )
+        if zone_method:
+            zones[f"{p}_hr_zone_method"] = zone_method
+        hr_zones = ss.get("zones_heart_rate") or []
+        if hr_zones:
+            zones[f"{p}_hr_zones_bpm"] = hr_zones
+            zones[f"{p}_hr_zones_labeled"] = _label_hr_zones(lthr, hr_zones)
         if sport == "Run":
             if ss.get("threshold_pace"):
                 zones["running_threshold_pace_min_per_km"] = ms_to_min_km(ss["threshold_pace"])

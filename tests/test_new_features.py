@@ -754,3 +754,63 @@ class TestCompareSeason:
             from mcp_server import compare_season
             result = await compare_season(weeks=99)
         assert result["window_weeks"] == 12
+
+
+class TestExtractAthleteZones:
+    """Verify _extract_athlete_zones produces run_hr_zones_labeled and zone method."""
+
+    def _athlete(self, lthr=165, zones_bpm=None, zone_method="GARMIN"):
+        return {
+            "ftp": None,
+            "lthr": None,
+            "weight": 75.0,
+            "sportSettings": [
+                {
+                    "activity_type": "Run",
+                    "lthr": lthr,
+                    "max_heart_rate": 195,
+                    "heartRateZoneMethod": zone_method,
+                    "zones_heart_rate": zones_bpm or [121, 140, 153, 165, 185],
+                    "threshold_pace": 3.33,  # m/s ≈ 5:00/km
+                    "pace_zones": None,
+                }
+            ],
+        }
+
+    def test_run_hr_zones_labeled_populated(self):
+        from claude_coach import _extract_athlete_zones
+        result = _extract_athlete_zones(self._athlete())
+        assert "run_hr_zones_labeled" in result
+        assert len(result["run_hr_zones_labeled"]) == 5
+
+    def test_labeled_zones_have_pct_lthr(self):
+        from claude_coach import _extract_athlete_zones
+        result = _extract_athlete_zones(self._athlete(lthr=165))
+        z1 = result["run_hr_zones_labeled"][0]
+        assert "min_pct_lthr" in z1
+        assert "max_pct_lthr" in z1
+        assert "range_pct_lthr" in z1
+        # Z1 upper = 121 bpm, LTHR = 165 → 73%
+        assert z1["max_pct_lthr"] == round(121 / 165 * 100)
+
+    def test_zone_method_included(self):
+        from claude_coach import _extract_athlete_zones
+        result = _extract_athlete_zones(self._athlete(zone_method="OLYMPIATOPPEN"))
+        assert result.get("run_hr_zone_method") == "OLYMPIATOPPEN"
+
+    def test_run_lthr_bpm_populated(self):
+        from claude_coach import _extract_athlete_zones
+        result = _extract_athlete_zones(self._athlete(lthr=170))
+        assert result["run_lthr_bpm"] == 170
+
+    def test_no_zones_when_sport_settings_empty(self):
+        from claude_coach import _extract_athlete_zones
+        result = _extract_athlete_zones({"ftp": None, "lthr": None, "weight": None, "sportSettings": []})
+        assert "run_hr_zones_labeled" not in result
+        assert result["weight_kg"] is None
+
+    def test_label_hr_zones_min_bpm_zero_gives_zero_pct(self):
+        from claude_coach import _label_hr_zones
+        labeled = _label_hr_zones(165, [121, 140])
+        assert labeled[0]["min_pct_lthr"] == 0
+        assert labeled[1]["min_pct_lthr"] == round(121 / 165 * 100)
