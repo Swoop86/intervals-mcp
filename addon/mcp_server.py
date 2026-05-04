@@ -603,6 +603,11 @@ async def get_athlete() -> dict:
       swim_css_min_per_100m              critical swim speed
       swim_lthr_bpm / swim_hr_zones_bpm  swimming HR zones
 
+    NOTE: review_training already includes athlete_zones with all of these fields.
+    Only call get_athlete separately when you need zone data without a full
+    training-context fetch (e.g. before create_workout when review_training has
+    not already been called in the same session).
+
     Always use run_hr_zones_labeled for HR targets — it reflects the athlete's
     configured zone system (Garmin, Olympiatoppen, CTS, Friel, etc.) and LTHR.
     Never compute zone percentages from scratch; zone systems differ significantly.
@@ -691,12 +696,13 @@ if not READ_ONLY:
         DESCRIPTION SYNTAX — always use this structured format.
         intervals.icu parses it and creates step-by-step Garmin guidance.
 
-        BEFORE WRITING ANY TARGETS — required pre-flight calls
+        BEFORE WRITING ANY TARGETS — required pre-flight
         ─────────────────────────────────────────
-        1. review_training — current CTL/ATL/TSB, recent load, athlete zones
-        2. get_athlete — running_threshold_pace_min_per_km, run_lthr_bpm,
-           running_pace_zones_min_per_km (athlete's configured zones, if set)
-        3. get_profile — preferences only; empty profile is normal, NOT a blocker
+        Call review_training first. Its response includes athlete_zones with
+        run_lthr_bpm, run_hr_zones_labeled, running_threshold_pace_min_per_km,
+        run_hr_zone_method, and cycling equivalents — no separate get_athlete
+        call is needed. Only call get_athlete if review_training was not called
+        in this session. Also call get_profile for timezone and preferences.
 
         COMPUTING PACE TARGETS (quality sessions: tempo, threshold, VO2max, strides)
         ─────────────────────────────────────────
@@ -1129,15 +1135,16 @@ if not READ_ONLY:
             distance_km       Target distance in kilometres — converted to metres automatically
             icu_training_load Target TSS
 
-        BEFORE WRITING ANY TARGETS — required pre-flight calls
+        BEFORE WRITING ANY TARGETS — required pre-flight
         ─────────────────────────────────────────
-        1. review_training — current CTL/ATL/TSB, recent 28-day load, athlete zones,
-           upcoming planned workouts. This is the primary context for plan creation.
-        2. get_athlete — running_threshold_pace_min_per_km, run_lthr_bpm,
-           running_pace_zones_min_per_km (athlete's configured zones, if set)
-        3. get_profile — local preferences (timezone, methodology); may be empty,
-           that is normal — do NOT treat empty profile as a reason to stop
-        Also call get_planned_workouts to check for existing calendar conflicts.
+        1. review_training — returns athlete_zones (run_lthr_bpm, run_hr_zones_labeled,
+           running_threshold_pace_min_per_km, run_hr_zone_method), recent load,
+           CTL/ATL/TSB, and upcoming planned workouts. This is the primary context.
+           No separate get_athlete call is needed if review_training was called.
+        2. get_profile — local preferences (timezone, methodology); may be empty —
+           that is normal, do NOT treat an empty profile as a reason to stop.
+        3. get_planned_workouts — check for existing calendar conflicts before placing
+           new sessions.
 
         COMPUTING PACE TARGETS (quality sessions: tempo, threshold, VO2max, strides)
         ─────────────────────────────────────────
