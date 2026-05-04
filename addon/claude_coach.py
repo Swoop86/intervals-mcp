@@ -347,7 +347,7 @@ def _clean_activity(a: dict) -> dict:
         "max_hr": a.get("max_heartrate"),
         "avg_power": a.get("average_watts"),
         "elevation_m": a.get("total_elevation_gain"),
-        "avg_temperature_c": a.get("average_temp"),
+        "wrist_temperature_c": a.get("average_temp"),  # wrist sensor, runs several °C above ambient
         "ctl": a.get("icu_ctl"),
         "atl": a.get("icu_atl"),
         "tsb": a.get("icu_tsb"),

@@ -974,8 +974,8 @@ async def review_training(activity_id: str = "") -> dict:
     Garmin and intervals.icu will then use the same LTHR and zone boundaries.
 
     Each activity in recent_activities now includes Garmin-sourced fields when available:
-      max_hr, avg_temperature_c (wrist-sensor estimate — treat as relative indicator only,
-        not an accurate ambient reading; useful for comparing sessions, not absolute values)
+      max_hr, wrist_temperature_c (wrist-sensor reading — runs several °C above ambient;
+        treat as a relative indicator only, not accurate ambient temperature)
       training_effect_aerobic (0–5), training_effect_anaerobic (0–5), training_effect_label
         (Recovery/Base/Tempo/Threshold/VO2Max/Anaerobic/Sprint)
       Running dynamics (run types only): vertical_oscillation_cm (ideal 6–8 cm),
@@ -2517,7 +2517,7 @@ def _summarise_activity(a: dict) -> dict:
         "avg_pace_per_km": a.get("icu_average_speed"),
         "avg_power": a.get("average_watts"),
         "elevation_m": a.get("total_elevation_gain"),
-        "avg_temperature_c": a.get("average_temp"),
+        "wrist_temperature_c": a.get("average_temp"),  # wrist sensor, not ambient
         "ctl": a.get("icu_ctl"),
         "atl": a.get("icu_atl"),
         "tsb": a.get("icu_tsb"),
