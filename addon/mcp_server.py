@@ -843,7 +843,10 @@ if not READ_ONLY:
         Estimate distance_km by summing all steps.
         Formula per step: distance_km = duration_min / pace_min_per_km
 
-        Pace multipliers from the athlete's actual threshold T (min/km):
+        Pace multipliers from the athlete's actual threshold T (min/km).
+        These are Friel/TrainingPeaks-style defaults — Daniels, Pfitzinger,
+        and Norwegian-method athletes use different effort-pace relationships.
+        Adjust based on the athlete's coaching_methodology if set in their profile.
           Easy/aerobic   T × 1.25–1.40   T=5:00→6:15–7:00/km   T=5:30→6:52–7:42/km
           Warmup/cooldown T × 1.30       T=5:00→6:30/km         T=5:30→7:09/km
           Tempo          T × 1.11–1.18   T=5:00→5:33–5:53/km   T=5:30→6:06–6:29/km
@@ -851,7 +854,7 @@ if not READ_ONLY:
           VO2max         T × 0.91–0.96   T=5:00→4:33–4:48/km   T=5:30→5:00–5:17/km
           Strides        T × 0.83–0.87   T=5:00→4:10–4:21/km   T=5:30→4:35–4:47/km
 
-        ALWAYS use the athlete's T from get_athlete — do not use the example values above.
+        ALWAYS use the athlete's T from athlete_zones — do not use the example values above.
 
         Worked example (T = 5:30/km):
           15 min warmup  at 7:09/km  → 15 / 7.15 = 2.1 km
@@ -1261,9 +1264,11 @@ if not READ_ONLY:
         normal. Do NOT delete and recreate workouts because the response shows 0.
 
         Estimate distance_km per step: duration_min / pace_min_per_km, then sum.
-        Use pace multipliers from the athlete's threshold T (get_athlete):
+        Use Friel-style pace multipliers from the athlete's threshold T (athlete_zones):
           Easy/warmup/cooldown  T × 1.30    Tempo  T × 1.14
           Threshold             T × 1.05    VO2max T × 0.93    Strides T × 0.85
+        Daniels/Norwegian/Pfitzinger athletes may use different pace-effort curves —
+        adjust if coaching_methodology is set in the profile.
         ALWAYS use the athlete's actual T — never use example values.
         Example T=5:30: 15 min wu(7:09) + 25 min tempo(6:16) + 10 min cd(7:09)
           → 15/7.15 + 25/6.27 + 10/7.15 = 2.1 + 4.0 + 1.4 = 7.5 km
