@@ -828,6 +828,30 @@ if not READ_ONLY:
         Hill repeats  (power/strength):
             Warmup\\n- 15m 65-72% LTHR\\n\\nMain Set 8x\\n- 60s 4:21-4:46/km Pace\\n- 90s 65-72% LTHR walk\\n\\nCooldown\\n- 10m 65-72% LTHR
 
+        TURNAROUND ALARM — out-and-back workouts
+        ─────────────────────────────────────────
+        When a workout is out-and-back (athlete runs out for half the time, turns,
+        runs back), insert a 1-second "Turn Around" step at the midpoint. Garmin
+        alerts (beeps + vibrates) at the step transition both INTO and OUT OF the
+        step — giving the athlete a clear double-signal to reverse direction.
+
+        Use only for TIME-BASED turnarounds (e.g. "20 min out, 20 min back").
+        Distance-based turnarounds are unreliable because GPS drift shifts the
+        step boundary away from the intended physical spot.
+
+        Structure: split the main effort into two equal halves around the marker.
+        Always name the step "Turn Around" so it is readable in the Garmin calendar.
+
+        Out-and-back easy run (total 50 min running):
+            Warmup\\n- 10m 65-72% LTHR\\n\\nOutbound\\n- 25m 72-80% LTHR\\n\\nTurn Around\\n- 1s 65-72% LTHR\\n\\nInbound\\n- 25m 72-80% LTHR\\n\\nCooldown\\n- 10m 65-72% LTHR
+
+        Out-and-back tempo (30 min tempo total, warmup/cooldown at home):
+            Warmup\\n- 15m 65-72% LTHR\\n\\nTempo Out\\n- 15m 5:33-5:53/km Pace\\n\\nTurn Around\\n- 1s 65-72% LTHR\\n\\nTempo In\\n- 15m 5:33-5:53/km Pace\\n\\nCooldown\\n- 10m 65-72% LTHR
+
+        Always include a note in the workout description header so the athlete sees
+        the turnaround logic in the calendar, e.g.:
+          "Out-and-back. Turn Around step = midpoint alarm (Garmin beeps twice)."
+
         METHODOLOGY NOTES
         ─────────────────────────────────────────
         Polarized: Z1 easy (run_hr_zones_labeled) OR VO2max pace — skip Tempo
