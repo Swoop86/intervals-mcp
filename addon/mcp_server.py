@@ -738,37 +738,46 @@ if not READ_ONLY:
         an LTHR change and you update it via update_sport_settings, ALL upcoming
         %LTHR workouts auto-recalculate on the next sync without manual edits.
 
-        Read %LTHR boundaries from athlete_zones.run_hr_zones_labeled — they
-        reflect the athlete's configured zone methodology (Garmin, Olympiatoppen,
-        CTS, etc.). Never invent zone percentages from scratch.
+        *** ALWAYS READ run_hr_zones_labeled BEFORE WRITING ANY %LTHR TARGET ***
+        athlete_zones.run_hr_zones_labeled contains the athlete's actual zone
+        boundaries as computed from their LTHR and configured zone methodology.
+        Each entry has min_pct_lthr, max_pct_lthr, and range_pct_lthr — use
+        these exact numbers. Never invent percentages or copy from examples.
 
-        Step target format:
-          "72-82% LTHR"        ← correct — resolves to BPM at sync, auto-adjusts
+        Different systems produce very different breakpoints:
+          Garmin default   Z1 65-78% / Z2 79-87% / Z3 88-93% / Z4 94-99% / Z5 100-112%
+          Friel 7-zone     Z1 60-65% / Z2 65-72% / Z3 72-82% / Z4 82-89% / Z5 89-94%
+          Olympiatoppen    %HRmax not %LTHR — numerically different again
+        Using the wrong system means the watch shows a different zone than intended.
+
+        Step target format (substitute athlete's actual percentages from run_hr_zones_labeled):
+          "79-87% LTHR"        ← correct — resolves to BPM at sync, auto-adjusts
           "119-135 bpm"        ← static — stale after LTHR update
-          "Z2" or "S2" alone   ← WRONG — zone labels differ across systems
+          "Z2" or "S2" alone   ← WRONG — zone label numbers differ across systems
 
-        Add a BPM annotation in the workout name or section header so the athlete
-        can read current targets in the intervals.icu calendar:
-          "Main Set (72-82% LTHR = 119-135 bpm)"  or just note at top of description:
-          "Targets at LTHR 165: easy=119-135 bpm, threshold=152-160 bpm"
+        Add a BPM annotation so the athlete can read current targets in the calendar:
+          "Main Set (79-87% LTHR = 130-144 bpm)"  or a header note:
+          "Targets at LTHR 165: easy=130-144 bpm, threshold=155-164 bpm"
 
         If run_hr_zones_labeled is absent: LTHR is not set. Prompt for it first,
         then call update_sport_settings(sport="Run", lthr_bpm=X, recalc_hr_zones=True).
 
         ONE TARGET PER STEP — pace OR %LTHR, never both on the same line.
           Quality steps (tempo/threshold/VO2max/strides) → absolute pace
-          All other steps (easy, warmup, cooldown, recovery) → %LTHR
+          All other steps (easy, warmup, cooldown, recovery) → %LTHR from run_hr_zones_labeled
 
         RUNNING WORKOUT TYPES
         ─────────────────────────────────────────
-        Examples use threshold=5:00/km, LTHR=165bpm. Recompute for actual athlete.
+        Examples below use Friel-style percentages (65-72% = Z1, 72-80% = Z2).
+        These are ILLUSTRATIONS OF SYNTAX ONLY. Replace with actual percentages
+        from athlete_zones.run_hr_zones_labeled before creating any workout.
 
         WARMUP / COOLDOWN RULE
         ─────────────────────────────────────────
-        Always use 65–72% LTHR (Z1) for warmup and cooldown — even before quality
-        sessions. Z2 warmup feels identical to the main set on easy days (no perceived
-        transition) and pre-fatigues the athlete before hard sessions. Z1 gives a
-        clear perceptible shift when you step up into the main set.
+        Always use the athlete's Z1 (lowest zone from run_hr_zones_labeled) for
+        warmup and cooldown — even before quality sessions. Z2 warmup feels
+        identical to the main set on easy days (no perceived transition) and
+        pre-fatigues the athlete before hard sessions. Z1 gives a clear shift.
 
         INTERVAL STRUCTURE — work:rest ratios by type
         ─────────────────────────────────────────
@@ -806,16 +815,16 @@ if not READ_ONLY:
 
         METHODOLOGY NOTES
         ─────────────────────────────────────────
-        Polarized: Easy (72–80% LTHR) OR VO2max pace — skip Tempo/Threshold
+        Polarized: Z1 easy (run_hr_zones_labeled) OR VO2max pace — skip Tempo
         Maffetone: Easy at <MAF pace (MAF HR = 180−age), no intensity until base solid
-        Norwegian:  two Threshold/Cruise sessions/week, everything else Easy
+        Norwegian:  two Threshold/Cruise sessions/week, everything else Z1-Z2
         Pyramidal:  Easy + Tempo + limited VO2max (traditional mix)
         Jack Daniels: E=70%, M=78%, T=88%, I=98%, R=110% (multiply threshold pace)
 
         SYNTAX REFERENCE
         ─────────────────────────────────────────
         Pace syntax:     4:45/km Pace / 4:45-5:05/km Pace   (always absolute for runs)
-        HR syntax:       72-80% LTHR / 65-72% LTHR           (always % LTHR for runs)
+        HR syntax:       <min_pct_lthr>-<max_pct_lthr>% LTHR  (read from run_hr_zones_labeled)
         Power syntax:    Z2 / 75% / 220w / ramp 55-75%       (% = %FTP, cycling)
         Duration syntax: 10m / 1h / 30s / 1h30m / 500mtr / 2km  (mtr not m for metres)
         Repeats:         Nx on its own line before the steps (blank lines around block)
@@ -1210,10 +1219,13 @@ if not READ_ONLY:
         ─────────────────────────────────────────
         Examples use threshold=5:00/km. Recompute for actual athlete.
 
-        WARMUP/COOLDOWN: always 65–72% LTHR (Z1) — do NOT use 72-80% for warmup,
-        it overlaps with the easy main set and pre-fatigues before quality efforts.
+        WARMUP/COOLDOWN: always use the athlete's Z1 (lowest zone from
+        run_hr_zones_labeled). Do NOT use Z2 for warmup — it overlaps with the easy
+        main set and pre-fatigues before quality efforts.
         STRIDES: 25–30s / 60s rest (1:2). Do NOT use 20s/90s — too short, too long.
         INTERVALS: VO2max 1:1, threshold cruise 4:1, hill repeats 1:1–1:2.
+        All %LTHR values in examples below are Friel-style ILLUSTRATIONS. Substitute
+        actual percentages from athlete_zones.run_hr_zones_labeled.
 
         Easy/Recovery:   "Warmup\\n- 5m 65-72% LTHR\\n\\nMain Set\\n- 40m 72-80% LTHR\\n\\nCooldown\\n- 5m 65-72% LTHR"
         Long run:        "Main Set\\n- 90m 72-80% LTHR"
@@ -1226,16 +1238,16 @@ if not READ_ONLY:
 
         METHODOLOGY NOTES
         ─────────────────────────────────────────
-        Polarized: Easy (72–80% LTHR) OR VO2max pace — skip Tempo/Threshold
+        Polarized: Z1 easy (run_hr_zones_labeled) OR VO2max pace — skip Tempo
         Maffetone: Easy at <MAF pace (MAF HR = 180−age), no intensity until base solid
-        Norwegian:  two Threshold/Cruise sessions/week, everything else Easy
+        Norwegian:  two Threshold/Cruise sessions/week, everything else Z1-Z2
         Pyramidal:  Easy + Tempo + limited VO2max (traditional mix)
         Jack Daniels: E=70%, M=78%, T=88%, I=98%, R=110% (multiply threshold pace)
 
         SYNTAX REFERENCE
         ─────────────────────────────────────────
         Pace syntax:     4:45/km Pace / 4:45-5:05/km Pace   (always absolute for runs)
-        HR syntax:       72-80% LTHR / 65-72% LTHR           (always % LTHR for runs)
+        HR syntax:       <min_pct_lthr>-<max_pct_lthr>% LTHR  (read from run_hr_zones_labeled)
         Power syntax:    Z2 / 75% / 220w / ramp 55-75%       (% = %FTP, cycling)
         Duration syntax: 10m / 1h / 30s / 1h30m / 500mtr / 2km  (mtr not m for metres)
         Repeats:         Nx on its own line before the steps (blank lines around block)
