@@ -892,18 +892,22 @@ async def get_activity_detail(activity_id: str) -> dict:
 
 
 @mcp.tool()
-async def get_activity_intervals(activity_id: str) -> list[dict]:
+async def get_activity_intervals(activity_id: str) -> dict:
     """Get the structured intervals/laps for a specific activity.
 
-    Returns each interval with duration, distance, power, HR, pace and TSS —
-    useful for analysing effort distribution, pacing execution, and zone compliance
-    within a single workout.
+    The intervals.icu endpoint returns a dict (not a bare array) containing
+    analysis data and per-interval breakdowns. Fields include id, type, and
+    an array of interval objects each with start_index, end_index, label,
+    average_watts, average_heartrate, distance, moving_time, and pace data.
+
+    Useful for analysing effort distribution, pacing execution, and zone
+    compliance within a single workout.
 
     Args:
         activity_id: Activity ID e.g. 'i12345678'
     """
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", activity_id):
-        return [{"error": "Invalid activity_id"}]
+        return {"error": "Invalid activity_id"}
     return await icu_get(f"activity/{activity_id}/intervals")
 
 

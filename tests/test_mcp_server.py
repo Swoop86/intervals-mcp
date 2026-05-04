@@ -2064,3 +2064,22 @@ class TestGetWeather:
             from mcp_server import get_weather
             await get_weather(days=99)
         assert captured_params.get("forecast_days") == 14
+
+
+class TestGetActivityIntervals:
+    """get_activity_intervals must accept the dict the API actually returns."""
+
+    async def test_returns_dict_passthrough(self):
+        import mcp_server
+        api_response = {"id": "i123", "analysis": {"zones": []}, "intervals": [{"label": "Lap 1"}]}
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=api_response)):
+            from mcp_server import get_activity_intervals
+            result = await get_activity_intervals("i123")
+        assert result == api_response
+        assert isinstance(result, dict)
+
+    async def test_invalid_id_returns_error_dict(self):
+        from mcp_server import get_activity_intervals
+        result = await get_activity_intervals("../../etc/passwd")
+        assert isinstance(result, dict)
+        assert "error" in result
