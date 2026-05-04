@@ -1495,6 +1495,108 @@ if not READ_ONLY:
 
         return await icu_put(f"athlete/{ATHLETE_ID}/sport-settings/{sport}", merged, params=params)
 
+
+@mcp.tool()
+async def get_hr_zone_config(sport: str = "Run") -> dict:
+    """Return the current HR zone configuration for a sport: methodology, LTHR,
+    zone boundaries as BPM, and pre-computed %LTHR ranges.
+
+    Use this to inspect what zone system the athlete is using before writing
+    workout targets, or to verify zones after calling set_hr_zone_breakpoints.
+
+    Returns:
+        sport                  sport queried
+        hr_zone_method         methodology label (GARMIN, OLYMPIATOPPEN, CTS_RUN, …)
+        lthr_bpm               configured LTHR for this sport (null if not set)
+        max_hr_bpm             configured max HR (null if not set)
+        zones_bpm              raw upper-boundary BPM array
+        zones_labeled          same as athlete_zones.{sport}_hr_zones_labeled —
+                               min_bpm, max_bpm, range_bpm, and if LTHR is set:
+                               min_pct_lthr, max_pct_lthr, range_pct_lthr
+
+    Args:
+        sport: Sport type (default "Run"). Case-sensitive: Run, Ride, Swim, etc.
+    """
+    data = await icu_get(f"athlete/{ATHLETE_ID}")
+    sport_settings = data.get("sportSettings") or []
+    ss = next((s for s in sport_settings if s.get("activity_type") == sport), None)
+    if ss is None:
+        return {"error": f"No sport settings found for sport '{sport}'"}
+    lthr = ss.get("lthr")
+    hr_zones = ss.get("zones_heart_rate") or []
+    return {
+        "sport": sport,
+        "hr_zone_method": (
+            ss.get("heartRateZoneMethod")
+            or ss.get("hr_zone_method")
+            or ss.get("zoneMethod")
+        ),
+        "lthr_bpm": lthr,
+        "max_hr_bpm": ss.get("max_heart_rate"),
+        "zones_bpm": hr_zones,
+        "zones_labeled": _label_hr_zones(lthr, hr_zones) if hr_zones else [],
+    }
+
+
+if not READ_ONLY:
+    @mcp.tool()
+    async def set_hr_zone_breakpoints(
+        sport: str,
+        upper_pct_lthr: list[int],
+    ) -> dict:
+        """Set HR zone upper boundaries for a sport by specifying %LTHR values.
+
+        Reads the current LTHR from sport settings, converts each percentage to
+        absolute BPM (round(lthr × pct / 100)), and writes the updated
+        zones_heart_rate array — aligning intervals.icu zones to any methodology
+        without touching the UI.
+
+        The number of values in upper_pct_lthr determines the number of zones.
+        The last value should be above 100% (e.g. 112 for Garmin's Z5 upper bound).
+
+        Common presets (upper boundaries as %LTHR):
+          Garmin 5-zone:       [78, 87, 93, 99, 112]
+          Friel 7-zone:        [72, 82, 89, 94, 100, 103, 112]
+          Norwegian 5-zone:    [72, 82, 87, 97, 110]
+          Olympiatoppen 5-zone: expressed as %HRmax — convert manually first
+
+        Requires LTHR to be set (run update_sport_settings with lthr_bpm first).
+
+        Args:
+            sport:           Sport type: Run, Ride, Swim, etc.
+            upper_pct_lthr:  List of upper-boundary percentages of LTHR, one per
+                             zone, in ascending order. E.g. [78, 87, 93, 99, 112].
+        """
+        # Read current settings
+        data = await icu_get(f"athlete/{ATHLETE_ID}")
+        sport_settings = data.get("sportSettings") or []
+        ss = next((s for s in sport_settings if s.get("activity_type") == sport), None)
+        if ss is None:
+            return {"error": f"No sport settings found for sport '{sport}'"}
+        lthr = ss.get("lthr")
+        if not lthr:
+            return {
+                "error": (
+                    f"LTHR not set for {sport}. Call update_sport_settings with "
+                    "lthr_bpm first, then set zone breakpoints."
+                )
+            }
+        if not upper_pct_lthr or upper_pct_lthr != sorted(upper_pct_lthr):
+            return {"error": "upper_pct_lthr must be a non-empty ascending list of integers"}
+
+        zones_bpm = [round(lthr * pct / 100) for pct in upper_pct_lthr]
+        merged = {**ss, "zones_heart_rate": zones_bpm}
+        result = await icu_put(f"athlete/{ATHLETE_ID}/sport-settings/{sport}", merged)
+        return {
+            "status": "updated",
+            "sport": sport,
+            "lthr_bpm": lthr,
+            "upper_pct_lthr": upper_pct_lthr,
+            "zones_bpm": zones_bpm,
+            "zones_labeled": _label_hr_zones(lthr, zones_bpm),
+        }
+
+
     # Pace zone % of threshold SPEED per zone count (upper boundaries).
     # Adapted so Z1–Z4 always align with Garmin's auto-calc breakpoints.
     _PACE_ZONE_PCTS: dict[int, list[float]] = {
