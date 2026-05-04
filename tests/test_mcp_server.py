@@ -2086,20 +2086,19 @@ class TestGetActivityIntervals:
 
 
 class TestGetHrZoneConfig:
-    def _athlete_data(self, lthr=165, zones=None, method="GARMIN"):
-        return {
-            "sportSettings": [{
-                "activity_type": "Run",
-                "lthr": lthr,
-                "max_heart_rate": 195,
-                "heartRateZoneMethod": method,
-                "zones_heart_rate": zones or [129, 144, 154, 164, 185],
-            }]
-        }
+    def _sport_settings(self, lthr=165, zones=None, method="GARMIN"):
+        # _get_sport_settings_list() fetches /sport-settings which returns a list directly
+        return [{
+            "activity_type": "Run",
+            "lthr": lthr,
+            "max_heart_rate": 195,
+            "heartRateZoneMethod": method,
+            "zones_heart_rate": zones or [129, 144, 154, 164, 185],
+        }]
 
     async def test_returns_zone_config(self):
         import mcp_server
-        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=self._athlete_data())):
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=self._sport_settings())):
             from mcp_server import get_hr_zone_config
             result = await get_hr_zone_config("Run")
         assert result["lthr_bpm"] == 165
@@ -2110,27 +2109,26 @@ class TestGetHrZoneConfig:
 
     async def test_unknown_sport_returns_error(self):
         import mcp_server
-        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value={"sportSettings": []})):
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=[])):
             from mcp_server import get_hr_zone_config
             result = await get_hr_zone_config("Ski")
         assert "error" in result
 
 
 class TestSetHrZoneBreakpoints:
-    def _athlete_data(self, lthr=165):
-        return {
-            "sportSettings": [{
-                "activity_type": "Run",
-                "lthr": lthr,
-                "max_heart_rate": 195,
-                "heartRateZoneMethod": "GARMIN",
-                "zones_heart_rate": [129, 144, 154, 164, 185],
-            }]
-        }
+    def _sport_settings(self, lthr=165):
+        # _get_sport_settings_list() fetches /sport-settings which returns a list directly
+        return [{
+            "activity_type": "Run",
+            "lthr": lthr,
+            "max_heart_rate": 195,
+            "heartRateZoneMethod": "GARMIN",
+            "zones_heart_rate": [129, 144, 154, 164, 185],
+        }]
 
     async def test_computes_bpm_from_pct(self):
         import mcp_server
-        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=self._athlete_data(165))):
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=self._sport_settings(165))):
             with patch.object(mcp_server, "icu_put", new=AsyncMock(return_value={})) as mock_put:
                 from mcp_server import set_hr_zone_breakpoints
                 result = await set_hr_zone_breakpoints("Run", [78, 87, 93, 99, 112])
@@ -2140,7 +2138,7 @@ class TestSetHrZoneBreakpoints:
 
     async def test_no_lthr_returns_error(self):
         import mcp_server
-        no_lthr = {"sportSettings": [{"activity_type": "Run", "lthr": None, "zones_heart_rate": []}]}
+        no_lthr = [{"activity_type": "Run", "lthr": None, "zones_heart_rate": []}]
         with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=no_lthr)):
             from mcp_server import set_hr_zone_breakpoints
             result = await set_hr_zone_breakpoints("Run", [78, 87, 93, 99, 112])
@@ -2148,7 +2146,7 @@ class TestSetHrZoneBreakpoints:
 
     async def test_non_ascending_pct_returns_error(self):
         import mcp_server
-        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=self._athlete_data())):
+        with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=self._sport_settings())):
             from mcp_server import set_hr_zone_breakpoints
             result = await set_hr_zone_breakpoints("Run", [99, 78, 87])
         assert "error" in result

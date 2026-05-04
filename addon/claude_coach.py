@@ -276,7 +276,7 @@ def _extract_athlete_zones(athlete_data: dict) -> dict:
 async def fetch_context(client: httpx.AsyncClient, activity_id: str) -> dict:
     athlete = f"athlete/{ATHLETE_ID}"
 
-    activities, wellness, planned, athlete_data = await asyncio.gather(
+    activities, wellness, planned, athlete_data, sport_settings_list = await asyncio.gather(
         icu_get(client, f"{athlete}/activities",
                 {"oldest": days_ago_iso(ACTIVITIES_DAYS), "newest": today_iso()}),
         icu_get(client, f"{athlete}/wellness",
@@ -284,7 +284,10 @@ async def fetch_context(client: httpx.AsyncClient, activity_id: str) -> dict:
         icu_get(client, f"{athlete}/events",
                 {"oldest": today_iso(), "newest": in_days_iso(PLANNED_DAYS)}),
         icu_get(client, athlete),
+        icu_get(client, f"{athlete}/sport-settings"),
     )
+    if isinstance(sport_settings_list, list):
+        athlete_data["sportSettings"] = sport_settings_list
 
     activities_sorted = sorted(activities, key=lambda a: a.get("start_date_local", ""))
 

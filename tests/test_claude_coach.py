@@ -361,15 +361,17 @@ class TestFetchContext:
     PLANNED = [{"id": 201, "start_date_local": "2024-01-18T00:00:00",
                 "name": "Tempo", "type": "Run", "description": "hard",
                 "icu_training_load": 70, "moving_time": 3600}]
-    ATHLETE = {"id": "i123", "ftp": 280, "lthr": 162, "weight": 70.0,
-               "sportSettings": [{"activity_type": "Run", "threshold_pace": 3.509,
-                                   "lthr": 162, "max_heart_rate": 190}]}
+    ATHLETE = {"id": "i123", "ftp": 280, "lthr": 162, "weight": 70.0}
+    # Separate sport-settings list — fetched from /sport-settings endpoint, not embedded in athlete
+    SPORT_SETTINGS = [{"activity_type": "Run", "threshold_pace": 3.509,
+                       "lthr": 162, "max_heart_rate": 190}]
 
     async def test_returns_correct_structure(self):
         mock_client = AsyncMock()
         with patch("claude_coach.icu_get",
                    new=AsyncMock(side_effect=[self.ACTIVITIES, self.WELLNESS,
-                                              self.PLANNED, self.ATHLETE])):
+                                              self.PLANNED, self.ATHLETE,
+                                              self.SPORT_SETTINGS])):
             result = await fetch_context(mock_client, "act1")
 
         assert result["latest_activity"]["id"] == "act1"
@@ -385,7 +387,8 @@ class TestFetchContext:
         mock_client = AsyncMock()
         with patch("claude_coach.icu_get",
                    new=AsyncMock(side_effect=[self.ACTIVITIES, self.WELLNESS,
-                                              self.PLANNED, self.ATHLETE])):
+                                              self.PLANNED, self.ATHLETE,
+                                              self.SPORT_SETTINGS])):
             result = await fetch_context(mock_client, "act1")
 
         assert "athlete_zones" in result
@@ -402,7 +405,7 @@ class TestFetchContext:
         ]
         mock_client = AsyncMock()
         with patch("claude_coach.icu_get",
-                   new=AsyncMock(side_effect=[activities, [], [], {}])):
+                   new=AsyncMock(side_effect=[activities, [], [], {}, []])):
             result = await fetch_context(mock_client, "nonexistent_id")
 
         assert result["latest_activity"]["id"] == "new"
@@ -416,7 +419,7 @@ class TestFetchContext:
         ]
         mock_client = AsyncMock()
         with patch("claude_coach.icu_get",
-                   new=AsyncMock(side_effect=[[], [], planned_with_note, {}])):
+                   new=AsyncMock(side_effect=[[], [], planned_with_note, {}, []])):
             result = await fetch_context(mock_client, "")
 
         assert len(result["planned_workouts"]) == 1

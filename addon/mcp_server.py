@@ -512,6 +512,16 @@ def _label_hr_zones(lthr: int | None, zone_uppers: list) -> list[dict]:
     return labeled
 
 
+async def _get_sport_settings_list() -> list:
+    """Fetch the full sport-settings array from the dedicated endpoint.
+
+    The GET /athlete/{id} response does NOT include sportSettings — that data
+    is only available from GET /athlete/{id}/sport-settings.
+    """
+    result = await icu_get(f"athlete/{ATHLETE_ID}/sport-settings")
+    return result if isinstance(result, list) else []
+
+
 def _extract_sport_zones(data: dict) -> None:
     """Extract per-sport coaching fields from sportSettings and add them to data."""
     sport_settings = data.get("sportSettings") or []
@@ -612,7 +622,12 @@ async def get_athlete() -> dict:
     configured zone system (Garmin, Olympiatoppen, CTS, Friel, etc.) and LTHR.
     Never compute zone percentages from scratch; zone systems differ significantly.
     """
-    data = await icu_get(f"athlete/{ATHLETE_ID}")
+    data, sport_settings = await asyncio.gather(
+        icu_get(f"athlete/{ATHLETE_ID}"),
+        icu_get(f"athlete/{ATHLETE_ID}/sport-settings"),
+    )
+    if isinstance(sport_settings, list):
+        data["sportSettings"] = sport_settings
     _extract_sport_zones(data)
     return data
 
@@ -1480,8 +1495,7 @@ if not READ_ONLY:
         # Read current sport settings and merge — pace/HR zone PUTs are full-replace,
         # so sending only the changed fields would wipe everything else.
         try:
-            athlete = await icu_get(f"athlete/{ATHLETE_ID}")
-            sport_settings = athlete.get("sportSettings") or []
+            sport_settings = await _get_sport_settings_list()
             current_ss = next((s for s in sport_settings if s.get("activity_type") == sport), {})
         except Exception:
             current_ss = {}
@@ -1522,8 +1536,7 @@ async def get_hr_zone_config(sport: str = "Run") -> dict:
     Args:
         sport: Sport type (default "Run"). Case-sensitive: Run, Ride, Swim, etc.
     """
-    data = await icu_get(f"athlete/{ATHLETE_ID}")
-    sport_settings = data.get("sportSettings") or []
+    sport_settings = await _get_sport_settings_list()
     ss = next((s for s in sport_settings if s.get("activity_type") == sport), None)
     if ss is None:
         return {"error": f"No sport settings found for sport '{sport}'"}
@@ -1573,8 +1586,7 @@ if not READ_ONLY:
                              zone, in ascending order. E.g. [78, 87, 93, 99, 112].
         """
         # Read current settings
-        data = await icu_get(f"athlete/{ATHLETE_ID}")
-        sport_settings = data.get("sportSettings") or []
+        sport_settings = await _get_sport_settings_list()
         ss = next((s for s in sport_settings if s.get("activity_type") == sport), None)
         if ss is None:
             return {"error": f"No sport settings found for sport '{sport}'"}
@@ -1645,8 +1657,7 @@ if not READ_ONLY:
                                        If omitted, uses the stored threshold pace.
             force:                     Set True to overwrite existing zones.
         """
-        athlete = await icu_get(f"athlete/{ATHLETE_ID}")
-        sport_settings = athlete.get("sportSettings") or []
+        sport_settings = await _get_sport_settings_list()
 
         run_ss: dict = {}
         existing_zones: list[float] = []

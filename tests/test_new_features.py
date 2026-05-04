@@ -99,27 +99,22 @@ class TestGetBestEfforts:
 # setup_run_pace_zones
 # ---------------------------------------------------------------------------
 
-_ATHLETE_NO_ZONES = {
-    "sportSettings": [{"activity_type": "Run", "threshold_pace": 3.333333}]
-}
+# _get_sport_settings_list() fetches /sport-settings which returns the list directly
+_ATHLETE_NO_ZONES = [{"activity_type": "Run", "threshold_pace": 3.333333}]
 # 5 zones with Garmin-default names (the common case)
-_ATHLETE_WITH_5_ZONES = {
-    "sportSettings": [{
-        "activity_type": "Run",
-        "threshold_pace": 3.333333,
-        "pace_zones": [2.593, 2.867, 3.1, 3.333, 3.667],
-        "pace_zone_names": ["Recovery", "Endurance", "Steady State", "Tempo", "Interval"],
-    }]
-}
+_ATHLETE_WITH_5_ZONES = [{
+    "activity_type": "Run",
+    "threshold_pace": 3.333333,
+    "pace_zones": [2.593, 2.867, 3.1, 3.333, 3.667],
+    "pace_zone_names": ["Recovery", "Endurance", "Steady State", "Tempo", "Interval"],
+}]
 # 6 zones with custom names
-_ATHLETE_WITH_6_ZONES = {
-    "sportSettings": [{
-        "activity_type": "Run",
-        "threshold_pace": 3.333333,
-        "pace_zones": [2.593, 2.867, 3.1, 3.333, 3.6, 3.833],
-        "pace_zone_names": ["Recovery", "Endurance", "Tempo", "Threshold", "VO2max", "Anaerobic"],
-    }]
-}
+_ATHLETE_WITH_6_ZONES = [{
+    "activity_type": "Run",
+    "threshold_pace": 3.333333,
+    "pace_zones": [2.593, 2.867, 3.1, 3.333, 3.6, 3.833],
+    "pace_zone_names": ["Recovery", "Endurance", "Tempo", "Threshold", "VO2max", "Anaerobic"],
+}]
 
 
 class TestSetupRunPaceZones:
@@ -217,7 +212,7 @@ class TestSetupRunPaceZones:
 
     async def test_error_when_no_threshold_and_none_in_settings(self):
         import mcp_server
-        athlete_data = {"sportSettings": [{"activity_type": "Run"}]}
+        athlete_data = [{"activity_type": "Run"}]
         with patch.object(mcp_server, "icu_get", new=AsyncMock(return_value=athlete_data)):
             from mcp_server import setup_run_pace_zones
             result = await setup_run_pace_zones()
