@@ -1141,6 +1141,16 @@ if not READ_ONLY:
 
         Only fields you provide are updated. Syncs to Garmin if connected.
 
+        USE THIS INSTEAD OF DELETE + RECREATE — always.
+        When you realise a workout has wrong HR targets, wrong pace zones, a
+        description error, or any other mistake: call update_workout with the
+        corrected description or fields. Do NOT delete the workout and create a
+        new one. Reasons:
+          - delete is irreversible; update can be undone by calling update again
+          - delete+recreate loses the event_id that the athlete may have saved
+          - creating a duplicate then deleting the original risks calendar noise
+          - the athlete may have already synced the workout to their Garmin
+
         Args:
             event_id: Calendar event ID (from get_planned_workouts)
             name: New workout name
@@ -1173,8 +1183,17 @@ if not READ_ONLY:
     async def delete_workout(event_id: int) -> dict:
         """Delete a planned workout from the calendar.
 
-        Use when removing a session is more appropriate than modifying it
-        (e.g. extra rest day needed, duplicate entry, race replaces workout).
+        ONLY call this when the user explicitly asks to delete or remove a workout.
+        Never call this to "fix" or "rebuild" a workout — use update_workout instead.
+
+        Permitted reasons to delete (all require explicit user instruction):
+          - User asks to cancel or remove a session
+          - Duplicate entry that shouldn't exist
+          - Race or event replaces a training day at the user's request
+
+        NEVER delete a workout you just created because you want to redo it with
+        better targets or a corrected description. Call update_workout instead —
+        it accepts a new description and syncs the fix to Garmin immediately.
 
         Args:
             event_id: Calendar event ID (from get_planned_workouts)
