@@ -755,24 +755,40 @@ if not READ_ONLY:
 
         *** ALWAYS READ run_hr_zones_labeled BEFORE WRITING ANY %LTHR TARGET ***
         athlete_zones.run_hr_zones_labeled contains the athlete's actual zone
-        boundaries as computed from their LTHR and configured zone methodology.
-        Each entry has min_pct_lthr, max_pct_lthr, and range_pct_lthr — use
-        these exact numbers. Never invent percentages or copy from examples.
+        boundaries already computed from their LTHR and zone methodology.
+        Each entry has range_pct_lthr (e.g. "81–92% LTHR") — copy this string
+        verbatim into the step target. Do not round, adjust, or invent numbers.
+
+        CRITICAL — two things that MUST NOT be done:
+          1. Do NOT compute %LTHR manually from the raw BPM array (zones_bpm /
+             zones_heart_rate). The labeled ranges are already computed —
+             dividing raw BPM values by LTHR yourself introduces rounding errors
+             and defeats the purpose of having pre-labeled zones.
+          2. Do NOT copy HR targets from existing workout descriptions in planned_workouts.
+             Those workouts may have been created with a different zone system
+             (Friel, Olympiatoppen, etc.) and will not match the athlete's current
+             configured zones. Always derive targets solely from run_hr_zones_labeled.
 
         Different systems produce very different breakpoints:
-          Garmin default   Z1 65-78% / Z2 79-87% / Z3 88-93% / Z4 94-99% / Z5 100-112%
+          Garmin default   Z1 0-81% / Z2 81-92% / Z3 92-98% / Z4 98-104% / Z5 104-113%
           Friel 7-zone     Z1 60-65% / Z2 65-72% / Z3 72-82% / Z4 82-89% / Z5 89-94%
           Olympiatoppen    %HRmax not %LTHR — numerically different again
-        Using the wrong system means the watch shows a different zone than intended.
+        These are ILLUSTRATIONS of why systems differ. For the athlete's actual
+        numbers, read run_hr_zones_labeled[i].range_pct_lthr — do not use these.
 
-        Step target format (substitute athlete's actual percentages from run_hr_zones_labeled):
-          "79-87% LTHR"        ← correct — resolves to BPM at sync, auto-adjusts
+        Z1 note: min_pct_lthr is always 0 for the lowest zone (min_bpm=0).
+        Write Z1 targets as "0–<max_pct_lthr>% LTHR" — intervals.icu interprets
+        this correctly as "stay below the upper boundary". The Garmin watch displays
+        it as a ceiling, not a floor-to-ceiling range.
+
+        Step target format (substitute athlete's actual range_pct_lthr from run_hr_zones_labeled):
+          "81–92% LTHR"        ← correct — resolves to BPM at sync, auto-adjusts
           "119-135 bpm"        ← static — stale after LTHR update
           "Z2" or "S2" alone   ← WRONG — zone label numbers differ across systems
 
         Add a BPM annotation so the athlete can read current targets in the calendar:
-          "Main Set (79-87% LTHR = 130-144 bpm)"  or a header note:
-          "Targets at LTHR 165: easy=130-144 bpm, threshold=155-164 bpm"
+          "Main Set (81–92% LTHR = 134-152 bpm)"  or a header note:
+          "Targets at LTHR 165: easy=134-152 bpm, threshold=162-171 bpm"
 
         If run_hr_zones_labeled is absent: LTHR is not set. Prompt for it first,
         then call update_sport_settings(sport="Run", lthr_bpm=X, recalc_hr_zones=True).
@@ -997,13 +1013,18 @@ async def review_training(activity_id: str = "") -> dict:
       running_threshold_pace_min_per_km, run_lthr_bpm,
       run_hr_zone_method (e.g. GARMIN, OLYMPIATOPPEN, CTS_RUN),
       run_hr_zones_labeled — pre-computed zone ranges with min_bpm, max_bpm,
-        range_bpm, min_pct_lthr, max_pct_lthr for each zone
+        range_bpm, min_pct_lthr, max_pct_lthr, range_pct_lthr for each zone
       cycling_ftp_watts, cycling_power_zones_watts, ride_lthr_bpm
 
     ALWAYS use run_hr_zones_labeled for HR targets — it reflects the athlete's
     configured zone system. Never compute zone percentages from first principles;
     different systems (Garmin, Olympiatoppen, CTS, Friel) use different breakpoints
     and zone 2 in one system ≠ zone 2 in another.
+
+    DO NOT call get_athlete after review_training to get HR zones — athlete_zones
+    is already included in this response. A second call is wasted and the data
+    is identical. Only call get_athlete in sessions where review_training was
+    never called.
 
     If run_hr_zones_labeled is absent, LTHR is not configured. This is a
     first-time setup situation — prompt the athlete:
