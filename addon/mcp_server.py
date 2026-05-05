@@ -1183,17 +1183,21 @@ if not READ_ONLY:
     async def delete_workout(event_id: int) -> dict:
         """Delete a planned workout from the calendar.
 
-        ONLY call this when the user explicitly asks to delete or remove a workout.
-        Never call this to "fix" or "rebuild" a workout — use update_workout instead.
-
-        Permitted reasons to delete (all require explicit user instruction):
-          - User asks to cancel or remove a session
+        Permitted reasons to delete:
+          - User asks to cancel, remove, or clear a session
+          - Replanning a week — removing workouts to replace them with a
+            restructured plan (different session types, different days)
           - Duplicate entry that shouldn't exist
-          - Race or event replaces a training day at the user's request
+          - Race or event replaces a training day
 
-        NEVER delete a workout you just created because you want to redo it with
-        better targets or a corrected description. Call update_workout instead —
-        it accepts a new description and syncs the fix to Garmin immediately.
+        NEVER delete a workout just to fix its targets, description, duration,
+        or distance — call update_workout instead. update_workout accepts a new
+        description and syncs the correction to Garmin immediately without
+        removing the event from the calendar.
+
+        The only time delete + create_workout is appropriate is when the
+        replacement workout is fundamentally different (different sport, session
+        type, or day) — not when you simply want to correct the existing one.
 
         Args:
             event_id: Calendar event ID (from get_planned_workouts)
