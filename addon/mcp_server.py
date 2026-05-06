@@ -870,6 +870,19 @@ if not READ_ONLY:
         Out-and-back tempo (30 min tempo total, warmup/cooldown at home):
             Warmup\\n- 15m 65-72% LTHR\\n\\nTempo Out\\n- 15m 5:33-5:53/km Pace\\n\\nTurn Around\\n- 1s 65-72% LTHR\\n\\nTempo In\\n- 15m 5:33-5:53/km Pace\\n\\nCooldown\\n- 10m 65-72% LTHR
 
+        STRIDES AND INTERVALS — place AFTER Inbound, never around Turn Around.
+        If the session includes strides or quality intervals, put them at the end
+        of the Inbound leg (near home), before the cooldown. Placing them at or
+        near the Turn Around fires them at the physical midpoint of the route —
+        the athlete is far from home with no sensible place to accelerate.
+
+        Correct order with strides:
+            Outbound → Turn Around (1s) → Inbound → Strides Nx → Cooldown
+
+        Wrong (strides fire 5 km from home):
+            Outbound → Strides Nx → Turn Around (1s) → Inbound → Cooldown
+            Outbound → Turn Around (1s) → Strides Nx → Inbound → Cooldown
+
         Always include a note in the workout description header so the athlete sees
         the turnaround logic in the calendar, e.g.:
           "Out-and-back. Turn Around step = midpoint alarm (Garmin beeps twice)."
