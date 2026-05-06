@@ -855,8 +855,14 @@ if not READ_ONLY:
         Distance-based turnarounds are unreliable because GPS drift shifts the
         step boundary away from the intended physical spot.
 
-        Structure: split the main effort into two equal halves around the marker.
-        Always name the step "Turn Around" so it is readable in the Garmin calendar.
+        CRITICAL — you MUST include an Inbound section after "Turn Around".
+        Garmin ends the workout when the last step completes. If "Turn Around" is
+        the last step, the workout ends at the midpoint and the athlete runs home
+        unguided. The structure MUST be:
+            [Warmup →] Outbound → Turn Around (1s) → Inbound [→ Cooldown]
+
+        Split the total running time equally across Outbound and Inbound.
+        Example: 70-minute out-and-back = 35m Outbound + 1s Turn Around + 35m Inbound.
 
         Out-and-back easy run (total 50 min running):
             Warmup\\n- 10m 65-72% LTHR\\n\\nOutbound\\n- 25m 72-80% LTHR\\n\\nTurn Around\\n- 1s 65-72% LTHR\\n\\nInbound\\n- 25m 72-80% LTHR\\n\\nCooldown\\n- 10m 65-72% LTHR
