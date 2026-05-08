@@ -270,6 +270,14 @@ def _extract_athlete_zones(athlete_data: dict) -> dict:
             if ss.get("threshold_pace"):
                 zones["swim_css_min_per_100m"] = ms_to_min_100m(ss["threshold_pace"])
 
+    # Garmin syncs LTHR/FTP to per-sport settings, not to the root athlete object.
+    # Fall back root-level fields from sport-specific ones so Claude never sees null
+    # while a valid per-sport value exists.
+    if not zones.get("lthr_bpm"):
+        zones["lthr_bpm"] = zones.get("run_lthr_bpm") or zones.get("ride_lthr_bpm")
+    if not zones.get("ftp_watts"):
+        zones["ftp_watts"] = zones.get("cycling_ftp_watts")
+
     return zones
 
 

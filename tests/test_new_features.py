@@ -809,3 +809,23 @@ class TestExtractAthleteZones:
         labeled = _label_hr_zones(165, [121, 140])
         assert labeled[0]["min_pct_lthr"] == 0
         assert labeled[1]["min_pct_lthr"] == round(121 / 165 * 100)
+
+    def test_lthr_bpm_fallback_from_run_lthr(self):
+        """Root-level athlete.lthr is null (Garmin syncs to sport settings, not root).
+        lthr_bpm should fall back to run_lthr_bpm so Claude never sees null."""
+        from claude_coach import _extract_athlete_zones
+        athlete = {"ftp": None, "lthr": None, "weight": 75.0,
+                   "sportSettings": [{"activity_type": "Run", "lthr": 168,
+                                       "zones_heart_rate": [130, 148, 160, 170, 190]}]}
+        result = _extract_athlete_zones(athlete)
+        assert result["lthr_bpm"] == 168
+        assert result["run_lthr_bpm"] == 168
+
+    def test_ftp_watts_fallback_from_cycling_ftp(self):
+        """Root-level athlete.ftp is null — fall back to cycling sport setting."""
+        from claude_coach import _extract_athlete_zones
+        athlete = {"ftp": None, "lthr": None, "weight": 75.0,
+                   "sportSettings": [{"activity_type": "Ride", "ftp": 290}]}
+        result = _extract_athlete_zones(athlete)
+        assert result["ftp_watts"] == 290
+        assert result["cycling_ftp_watts"] == 290
