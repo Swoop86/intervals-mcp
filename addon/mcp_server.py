@@ -1071,7 +1071,36 @@ async def review_training(activity_id: str = "") -> dict:
 
     Use these directly — do not recompute from the raw wellness list.
 
+    COACHING STYLE — check before reviewing
+    ─────────────────────────────────────────
+    Check athlete_profile.coaching_methodology before giving advice.
+    If it is not set or empty, ask the athlete which style fits them BEFORE
+    proceeding with the review — do not guess or default to generic advice.
+    Present the options briefly:
+
+      "Before I dive in — which coaching style fits you best?
+       • Polarized — 80% very easy, 20% hard VO2max. No threshold.
+       • Norwegian — two threshold sessions/week, everything else Z1–Z2.
+       • Pyramidal — mix of easy, tempo, and some VO2max (traditional).
+       • Maffetone — purely aerobic base below MAF HR until base is solid.
+       • Jack Daniels — VDOT paces from race time (E / M / T / I / R).
+       • Custom — describe your own approach.
+       Or just say 'skip' and I'll use a balanced default."
+
+    Then call set_coaching_style with their answer before continuing.
+    If they say "skip", proceed with pyramidal as a neutral default.
+
+    If coaching_methodology IS set, apply it consistently: let it shape
+    which sessions you recommend, how you interpret threshold vs easy
+    runs, and what you flag as imbalance.
+
     COACHING REVIEW — cover these points after calling this tool:
+
+    METRIC LABELS — always pair the technical term with plain English:
+      CTL (fitness), ATL (fatigue), TSB (form), TSS (training load),
+      LTHR (lactate threshold HR), FTP (cycling threshold power),
+      ACWR (acute:chronic workload ratio), HRV (heart rate variability)
+    E.g. "Your CTL (fitness) is 52, up from 44 four weeks ago."
 
     1. Latest workout — effort vs intent, HR response, pacing execution
 
@@ -1090,9 +1119,10 @@ async def review_training(activity_id: str = "") -> dict:
            this indicates underlying chronic stress the daily reading misses
 
     4. Training load
-       Use readiness_metrics.acwr and acwr_flag:
+       Use readiness_metrics.acwr (acute:chronic workload ratio) and acwr_flag:
          0.8–1.3 optimal | <0.8 underloading | >1.3 caution | >1.5 danger
-       Check tss_last_7_days vs tss_last_28_days for weekly trend
+       Check tss_last_7_days (training load, acute) vs tss_last_28_days
+       (training load, chronic) for weekly trend
 
     5. Action hierarchy (apply in order, stop at first match):
          REST      — RI < 0.6 OR HRV z-score < −2.0 OR ACWR > 1.5
@@ -1101,12 +1131,12 @@ async def review_training(activity_id: str = "") -> dict:
          MONITOR   — all green, no action needed
 
     6. Mid-week steering
-       If earlier sessions this week exceeded TSS targets → scale down remaining days
-       If behind weekly target → scale up within ACWR safety limits
+       If earlier sessions this week exceeded TSS (load) targets → scale down remaining days
+       If behind weekly target → scale up within ACWR (workload ratio) safety limits
 
     7. Current training phase (Base/Build/Peak/Taper) and plan adjustments
 
-    8. LTHR drift check (run on every review, not just hard/race activities)
+    8. LTHR (lactate threshold HR) drift check — run on every review
        Each activity may include:
          lthr_detected_bpm           — Garmin-detected LTHR for that effort
          lt_pace_detected_min_per_km — Garmin-detected threshold pace
@@ -1130,6 +1160,15 @@ async def review_training(activity_id: str = "") -> dict:
 
     IMPORTANT: Use compound patterns — do not recommend rest based on a single
     metric spike. Require multiple signals before major load changes.
+
+    CONFIRM BEFORE ACTING — never modify the calendar without approval
+    ─────────────────────────────────────────
+    When the review suggests a workout should be changed, describe the
+    proposed change and ask for confirmation BEFORE calling update_workout
+    or delete_workout. The only exception is if the athlete's message
+    explicitly requests the change (e.g. "add a rest day Tuesday" or
+    "update my Thursday run"). Unsolicited edits — even well-reasoned
+    ones — must wait for a yes.
 
     Args:
         activity_id: Optional specific activity ID to focus on (e.g. 'i12345678').
@@ -1159,6 +1198,11 @@ if not READ_ONLY:
         """Modify a planned workout on the calendar.
 
         Only fields you provide are updated. Syncs to Garmin if connected.
+
+        CONFIRM BEFORE CALLING — always get athlete approval first.
+        Describe the proposed change in plain language and wait for a "yes"
+        before calling this tool. Exception: the athlete explicitly asked for
+        the change in their last message.
 
         USE THIS INSTEAD OF DELETE + RECREATE — always.
         When you realise a workout has wrong HR targets, wrong pace zones, a
@@ -1201,6 +1245,10 @@ if not READ_ONLY:
     @mcp.tool()
     async def delete_workout(event_id: int) -> dict:
         """Delete a planned workout from the calendar.
+
+        CONFIRM BEFORE CALLING — always get athlete approval first.
+        Describe what will be deleted and wait for a "yes" before calling this tool.
+        Exception: the athlete explicitly asked for the deletion in their last message.
 
         Permitted reasons to delete:
           - User asks to cancel, remove, or clear a session
