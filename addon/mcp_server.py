@@ -7,6 +7,7 @@ for the webhook, coach, and health routes, all in a single ASGI app.
 from __future__ import annotations
 
 import html
+import math
 import os
 import re
 import json
@@ -108,10 +109,17 @@ _DEFAULT_PROFILE: dict = {
     "timezone": "",
     "preferred_units": "km",
     "training_days_per_week": None,
+    "max_runs_per_week": None,
+    "preferred_long_run_day": "",
     "easy_pace_min_per_km": None,
     "threshold_pace_min_per_km": None,
     "weekly_volume_km": None,
     "known_limiters": [],
+    "strengths": [],
+    "injury_history": [],
+    "current_injury": "",
+    "cross_training": [],
+    "vdot": None,
     "notes": "",
     "coaching_methodology": "",
     "coaching_description": "",
@@ -180,6 +188,100 @@ Key sessions: 20–40min tempo runs, 4–6×1km cruise intervals, one hard quali
 More traditional and intuitive than polarized — allows sustained threshold efforts.
 Good for recreational runners and those who find purely easy/hard (polarized) difficult to sustain.
 Flag if the athlete is doing more than one hard session and one threshold session in the same week.""",
+    ),
+    "pfitzinger": (
+        "Pfitzinger (Pete Pfitzinger)",
+        """Pfitzinger method: science-based, lactate-threshold-focused marathon preparation.
+
+Periodization phases (18-week plan, 55–70 km/week peak):
+  Weeks 18–14 (General conditioning): aerobic base, introduce strides, medium-long runs
+  Weeks 13–7  (Lactate threshold emphasis): LT runs 5–11km at threshold, VO2max intervals
+  Weeks 6–3   (Race preparation): marathon-pace runs, tune-up race, peak mileage
+  Weeks 2–1   (Taper): reduce volume 20% then 40%, maintain intensity
+
+Key session types:
+  Medium-long run  13–18km at easy pace — the backbone of the plan, twice/week
+  LT run           5–11km at threshold pace (T pace = sustainable for ~60min race)
+  VO2max intervals 5×600m or 4×1200m at 3K–5K race pace, 90s recovery
+  Long run         25–35km at 65–75% max HR
+  Recovery run     ≤11km fully easy, often day after hard session
+
+Volume philosophy: mileage is the primary stimulus. Quality sessions build on a high-volume easy base.
+Never cut easy runs to fit quality sessions — protect the volume foundation.
+Tune-up races every 3–4 weeks in build phase to calibrate race pace and test fitness.""",
+    ),
+    "hanson": (
+        "Hanson Brothers (Cumulative Fatigue)",
+        """Hanson method: trains on cumulative fatigue to simulate late-race conditions.
+
+Core principle: the body must learn to run on tired legs. This is achieved by never fully recovering between sessions — the "something in the tank" feeling before a long run IS the point.
+
+Key differences from traditional plans:
+  Long run max = 26km (16 miles) — not 35km. The long run is already hard because it follows days of running.
+  SOS (Something of Substance) sessions: Speed, Strength, and Long runs are the 3 quality sessions/week.
+  Easy runs fill remaining days — strictly easy, they enable recovery while maintaining volume.
+
+SOS session structure:
+  Speed      400m–1200m reps at 5K–10K pace, total 6–8km of fast work
+  Strength   6–10km at goal marathon pace (MP), or MP + cruise intervals
+  Long run   26km at easy–moderate effort (MP+45–60s), day 5 or 6 of the week
+
+Weekly pattern: Easy–Speed–Easy–Strength–Easy–Long–Rest (or similar)
+Volume: 64–100 km/week at peak.
+Taper: 3-week reduction — week -3: 75% volume, week -2: 60%, race week: 30%.
+
+Flag sessions where the athlete reports feeling unusually fatigued going into a long run — that is expected and correct.""",
+    ),
+    "higdon": (
+        "Hal Higdon",
+        """Hal Higdon method: accessible, conservative, widely used for first-timers through advanced runners.
+
+Philosophy: gradual progression, injury prevention first, base before speed.
+Plans: Novice 1, Novice 2, Intermediate 1 & 2, Advanced 1 & 2.
+
+Novice structure (most applicable for recreational runners):
+  4 days running: 3 easy midweek + 1 long run Sunday
+  Long run increases ~1.5km/week, with cutback every 3rd week
+  No speedwork in Novice 1; light speedwork (strides, easy tempo) in Novice 2
+  Cross-training day replaces one easy run
+
+Intermediate/Advanced add:
+  Medium-long run midweek (Wed, 13–18km)
+  Pace runs at marathon goal pace (Tue/Thu)
+  Optional race tune-ups every 3–4 weeks
+
+Cutback weeks: every 3rd–4th week, reduce long run by 20–25% to absorb training.
+Peak week long run: 32–35km (20 miles) 3 weeks before the race.
+Taper: weeks 2–1, drop 30% then 50% volume.
+
+Good match for athletes with limited running history, returning from injury, or balancing heavy work/life load.
+Prioritize consistency over intensity — missed sessions matter more than pace targets.""",
+    ),
+    "first": (
+        "FIRST (3-Plus-2)",
+        """FIRST method (Furman Institute of Running): 3 quality runs per week + 2 cross-training sessions. No junk miles — every run has a specific purpose and target pace.
+
+3 key run sessions (all from VDOT / 5K reference time):
+  Track workout   6–10×400m or 3–4×1600m at 5K pace (speed/economy)
+  Tempo run       5–8km at threshold pace (lactate clearance)
+  Long run        18–32km starting at marathon pace + 60s, finishing at marathon pace
+
+2 cross-training sessions:
+  Cycling, swimming, or elliptical — high aerobic effort, no running impact
+  Duration: 45–60min at steady effort
+
+Key principles:
+  All 3 runs are prescribed — no "whatever feels good today" easy runs
+  Recovery comes from cross-training days (active, but no running stress)
+  Minimum 1 rest day
+
+Best for:
+  Athletes who can only run 3 days/week due to injury history or life constraints
+  Those who want to eliminate low-stimulus junk miles
+  Injury-prone runners who need to limit impact volume
+
+Use calculate_vdot (or athlete's VDOT from profile) to compute all paces.
+Flag if athlete cannot complete 2 cross-training sessions — the method depends on them for recovery.""",
     ),
 }
 
@@ -1084,6 +1186,10 @@ async def review_training(activity_id: str = "") -> dict:
        • Pyramidal — mix of easy, tempo, and some VO2max (traditional).
        • Maffetone — purely aerobic base below MAF HR until base is solid.
        • Jack Daniels — VDOT paces from race time (E / M / T / I / R).
+       • Pfitzinger — medium-long + LT runs + VO2max, high aerobic focus.
+       • Hanson — cumulative fatigue, max long run 26 km, SOS sessions.
+       • Higdon — gradual build, accessible, cutback weeks every 3–4 weeks.
+       • FIRST (3+2) — 3 quality runs + 2 cross-training, no junk miles.
        • Custom — describe your own approach.
        Or just say 'skip' and I'll use a balanced default."
 
@@ -1093,6 +1199,40 @@ async def review_training(activity_id: str = "") -> dict:
     If coaching_methodology IS set, apply it consistently: let it shape
     which sessions you recommend, how you interpret threshold vs easy
     runs, and what you flag as imbalance.
+
+    METHODOLOGY COMBINATION — synthesis guidance
+    ─────────────────────────────────────────
+    Real athletes rarely fit one methodology perfectly. Blend principles when
+    the data or athlete's goal calls for it:
+      - Polarized base + Pfitzinger quality: long aerobic weeks with targeted
+        LT and VO2max sessions placed where recovery permits.
+      - Norwegian doubles + Higdon progression: threshold emphasis but with
+        Higdon's conservative weekly ramp and cutback rhythm.
+      - FIRST 3+2 + extra aerobic: keep the 3 quality runs, add optional easy
+        sessions when recovery (RI ≥ 0.8) allows without adding junk miles.
+      - Maffetone base → Jack Daniels quality: build MAF base first, then
+        introduce VDOT-calibrated intervals once MAF pace improves.
+    When blending, always prioritise the athlete's recovery state over the plan.
+
+    INJURY AWARENESS — check every review
+    ─────────────────────────────────────────
+    Always check athlete_profile.current_injury and athlete_profile.injury_history.
+
+    If current_injury is non-empty:
+      1. Lead with acknowledgement: "I see you have [injury]. Let's adjust the
+         plan to keep you moving without aggravating it."
+      2. Flag any planned sessions that stress the injured area (e.g. speed work
+         or hills for Achilles/calf issues; long runs for stress fractures).
+      3. Suggest cross-training substitutions from athlete_profile.cross_training.
+      4. Do NOT prescribe intensity increases while injured — cap recommendations
+         at maintenance volume and easy/aerobic effort only.
+      5. Prompt for clearance: "Have you had a chance to see a physio or doctor?
+         When they give the green light, we can resume building."
+
+    If injury_history contains recurring injuries (same body part ≥ 2 entries):
+      - Build in proactive prevention: strength cues, volume caps, run-walk
+        during high-load weeks, or extra recovery days near previous flare-up
+        thresholds.
 
     COACHING REVIEW — cover these points after calling this tool:
 
@@ -1422,6 +1562,97 @@ if not READ_ONLY:
         ALWAYS use the athlete's actual T — never use example values.
         Example T=5:30: 15 min wu(7:09) + 25 min tempo(6:16) + 10 min cd(7:09)
           → 15/7.15 + 25/6.27 + 10/7.15 = 2.1 + 4.0 + 1.4 = 7.5 km
+
+        SKELETON-FIRST PLAN CREATION — recommended for multi-week plans
+        ─────────────────────────────────────────
+        For plans longer than one week, build in two passes:
+
+        Pass 1 — Skeleton: Create all workouts with name, date, type, and a brief
+          one-line description placeholder. Use create_plan to place the full
+          calendar structure at once. This lets the athlete see the arc and approve
+          the week distribution before you write detailed targets.
+
+        Pass 2 — Details: After athlete approval, update each workout with the
+          full structured description (HR targets, pace zones, step breakdowns)
+          using update_workout. This avoids generating elaborate targets for a
+          plan the athlete might restructure.
+
+        Skip Pass 1 for single-week or single-session requests.
+
+        CTL RAMP RATE — load progression
+        ─────────────────────────────────────────
+        CTL (fitness) is cumulative training stress. Build it safely:
+          Sustainable ramp:  4–6 CTL points per week during build phase.
+          Max ramp:          8 pts/week for short blocks (≤ 2 weeks) only.
+          Cutback weeks:     Every 3rd or 4th week reduce load by 20–25%.
+          Peak CTL timing:   Reach peak fitness 5–6 weeks before race day.
+          Taper:             3 weeks out — reduce volume 15–25%/week, keep intensity.
+
+        Check review_training.fitness_metrics.ctl (current CTL) before planning.
+        If no race goal: target CTL = current CTL + (weeks × 4–5).
+        If race goal set: check set_race_goal guidance for CTL targeting.
+
+        TRAINING PHASE CHARACTERISTICS
+        ─────────────────────────────────────────
+        Base (> 12 weeks to race):
+          High volume, low intensity. Build aerobic engine and mileage base.
+          Mostly easy + long run. Introduce strides 1×/week. No hard intervals.
+          Weekly mileage increase: ≤ 10% per week.
+
+        Build (6–12 weeks to race):
+          Add quality: threshold runs, VO2max sessions 1–2×/week.
+          Long run with race-pace segments. Medium-long runs mid-week.
+          CTL ramp 4–6 pts/week. Cutback every 3rd week.
+
+        Peak (3–6 weeks to race):
+          Race-specific sessions: goal-pace miles, longer threshold work.
+          Volume plateaus or drops slightly; intensity stays high.
+          Target CTL peak here (5–6 weeks out), then hold or taper.
+
+        Taper (1–3 weeks to race):
+          Volume −15–25%/week. Keep 1 quality session/week at goal pace.
+          Reduce long run significantly. Maintain frequency — don't drop runs.
+          Final week: mostly easy with short race-pace pickups.
+
+        INJURY ACCOMMODATION — always check profile before planning
+        ─────────────────────────────────────────
+        Before writing a plan, check athlete_profile.current_injury and
+        athlete_profile.injury_history.
+
+        If current_injury is set:
+          - Replace high-impact sessions with cross_training alternatives
+          - No volume increases; maintain or reduce
+          - Flag which sessions to skip if pain increases
+          - Plan a return-to-run protocol: walk-run → easy → normal
+
+        If injury_history shows recurring issues:
+          - Cap peak weeks at the volume where past injuries occurred
+          - Add preventive strength cues to relevant workout descriptions
+          - Schedule extra easy days around historically vulnerable periods
+            (e.g. after the longest long run in a block)
+
+        METHODOLOGY-SPECIFIC PLAN RULES
+        ─────────────────────────────────────────
+        Pfitzinger:  Include medium-long runs (60–70% of long run) mid-week.
+                     LT runs (6–8 km at T pace) 1×/week in build phase.
+                     VO2max intervals 1×/week. Recovery runs between hard days.
+        Hanson:      Max long run 26 km / 16 miles — no exceptions.
+                     SOS sessions: Speed (M or T pace), Strength (MP+), Tempo.
+                     Runs on tired legs — place SOS after a 10-day block.
+        Higdon:      Cutback every 3–4 weeks (drop to 70% volume).
+                     Long run is the weekly centrepiece; build it weekly.
+                     Novice: no quality sessions in base. Advanced: add tempo.
+        FIRST:       Exactly 3 quality runs + 2 cross-training sessions.
+                     No easy running. Key sessions: Speed, Tempo, Long Run.
+                     Long run is always at a prescribed pace (not just easy).
+        Polarized:   No moderate-intensity sessions. Either very easy (Z1) or
+                     very hard (VO2max). Threshold work only in peak phase.
+        Norwegian:   Two threshold sessions/week, double-threshold days possible.
+                     All other runs strictly Z1–Z2. Monitor total threshold load.
+        Maffetone:   No intensity until MAF pace improves. 4–6 week base phase
+                     minimum. Re-test MAF pace monthly.
+        Jack Daniels: Use VDOT paces exclusively. Compute from calculate_vdot.
+                      Phase volumes: E% 65–75, M% 10–20, T% 8–10, I% 5–8, R% 5%.
 
         WEEKLY TARGETS — always call set_weekly_target for each week in the plan
         ─────────────────────────────────────────
@@ -1919,28 +2150,48 @@ if not READ_ONLY:
 
         Merges the given fields into the existing profile. Pass only the fields
         you want to change. Supported fields:
+
+        BASIC
             sport                      e.g. "running", "cycling", "triathlon"
             age                        integer (years)
             location                   city or "lat,lon" — used by get_weather
-            timezone                   IANA timezone e.g. "Europe/Oslo" — used for
-                                       correct date/scheduling decisions
-            preferred_units            "km" (default) or "miles" — Claude uses this
-                                       for all distances in responses
-            training_days_per_week     integer
-            easy_pace_min_per_km       float (e.g. 6.0 for 6:00/km)
+            timezone                   IANA timezone e.g. "Europe/Oslo"
+            preferred_units            "km" (default) or "miles"
+            training_days_per_week     integer — total days available to train
+            max_runs_per_week          integer — max running days (cross-training fills rest)
+            preferred_long_run_day     e.g. "Sunday"
+
+        PERFORMANCE
+            easy_pace_min_per_km       float (e.g. 6.5 for 6:30/km)
             threshold_pace_min_per_km  float
-            weekly_volume_km           float
-            known_limiters             list of strings
-            notes                      free-text string
+            weekly_volume_km           float — current weekly running volume
+            vdot                       float — Jack Daniels VDOT score (use calculate_vdot)
+
+        ATHLETE CONTEXT — use these to personalise plans and flag risks
+            strengths                  list of strings — e.g. ["strong aerobic base",
+                                       "good at hills", "consistent training history"]
+            known_limiters             list of strings — e.g. ["susceptible to heat",
+                                       "weak at speed endurance", "tight hip flexors"]
+            injury_history             list of strings — e.g. ["IT band 2023",
+                                       "plantar fasciitis 2022 (right foot)"]
+            current_injury             string — active issue or "" if none.
+                                       e.g. "mild shin splints right leg, week 2"
+                                       ALWAYS check this before prescribing intensity.
+            cross_training             list of strings — e.g. ["cycling", "swimming"]
+
+        OTHER
+            notes                      free-text — coaching context, preferences,
+                                       race history, anything else relevant
 
         Args:
             updates: Dict of fields to update.
         """
         _PROFILE_FIELDS = frozenset({
             "sport", "age", "location", "timezone", "preferred_units",
-            "training_days_per_week", "easy_pace_min_per_km",
-            "threshold_pace_min_per_km", "weekly_volume_km",
-            "known_limiters", "notes",
+            "training_days_per_week", "max_runs_per_week", "preferred_long_run_day",
+            "easy_pace_min_per_km", "threshold_pace_min_per_km", "weekly_volume_km",
+            "vdot", "strengths", "known_limiters", "injury_history",
+            "current_injury", "cross_training", "notes",
         })
         profile = _load_profile()
         safe = {k: v for k, v in updates.items() if k in _PROFILE_FIELDS}
@@ -1970,10 +2221,19 @@ if not READ_ONLY:
                           No intervals until base is established.
           jack_daniels  — VDOT-based paces from recent race time. Five zones:
                           Easy, Marathon, Threshold, Interval, Repetition.
+                          Use calculate_vdot to derive VDOT and paces first.
           norwegian     — Two threshold sessions/week at ~75–80% HRmax.
                           High volume, controlled effort. All else easy.
           pyramidal     — ~70% easy, ~20% threshold, ~10% hard.
                           Traditional approach; allows comfortably-hard efforts.
+          pfitzinger    — Medium-long runs mid-week + LT runs + VO2max. High aerobic
+                          emphasis. 12–18 week marathon plans (55–85+ mpw).
+          hanson        — Cumulative fatigue model. Max long run 16 miles / 26 km.
+                          SOS sessions (speed, strength, tempo). No traditional 20-miler.
+          higdon        — Gradual base-building, accessible for novice to advanced.
+                          Long run = weekly backbone; cutback weeks every 3–4 weeks.
+          first         — 3 quality runs + 2 cross-training per week (3+2 model).
+                          No easy/junk miles. Speed work, tempo, long run each week.
           custom        — Define your own (requires custom_description).
 
         Args:
@@ -2014,6 +2274,37 @@ if not READ_ONLY:
         Once a race goal is set, coaching reviews will structure training across
         Base → Build → Peak → Taper phases leading to the event date.
         The current phase is inferred automatically from weeks remaining.
+
+        CTL TARGETING — use these benchmarks for the race distance
+        ─────────────────────────────────────────
+        After setting the goal, calculate a realistic peak CTL target:
+
+          Guideline (peak CTL reached 5–6 weeks before race):
+            5K / 10K:         current_ctl × 1.10–1.20 (short, quality-focused)
+            Half marathon:    current_ctl × 1.15–1.25 (volume + some quality)
+            Marathon:         current_ctl × 1.20–1.35 (sustained volume required)
+
+          Ramp budget: (target_ctl − current_ctl) / weeks_to_peak
+          Must stay ≤ 6 CTL/week. If budget exceeds 6, the goal date is too soon
+          for a safe build — flag this to the athlete.
+
+          Example: current CTL = 45, marathon in 18 weeks.
+            Peak target = 45 × 1.30 = 58.5, peak at week 13 (5 weeks before race).
+            Ramp = (58.5 − 45) / 13 = 1.0/week → very conservative, safe.
+
+          After calling this tool, communicate:
+            "Your current CTL (fitness) is [X]. For this [race] in [N] weeks,
+             I'm targeting a peak CTL of [Y] around [date]. That's a ramp of
+             [Z] CTL/week — [assessment: safe/aggressive/too fast]. Here's the
+             phase plan: ..."
+
+        VDOT AND PACE CALIBRATION
+        ─────────────────────────────────────────
+        If target_time is provided, consider calling calculate_vdot with:
+          race_distance_km=distance_km, race_time=target_time
+        to derive VDOT-calibrated training paces (E / M / T / I / R) for the plan.
+        Use these paces in create_plan descriptions rather than pure %LTHR for
+        athletes following Jack Daniels or Pfitzinger methodologies.
 
         Args:
             event_name:  Name of the event, e.g. "Oslo Half Marathon"
@@ -2065,6 +2356,102 @@ if not READ_ONLY:
         _clear_goal()
         log.info("Race goal cleared")
         return {"status": "cleared"}
+
+
+@mcp.tool()
+async def calculate_vdot(
+    race_distance_km: float,
+    race_time: str,
+) -> dict:
+    """Calculate Jack Daniels VDOT and training paces from a recent race result.
+
+    VDOT is a single number representing current aerobic fitness. From it, Jack
+    Daniels' Running Formula derives five training paces (E / M / T / I / R)
+    that are physiologically calibrated to produce the right training stimulus
+    without over- or under-training.
+
+    Use this when the athlete:
+    - Has a recent race result and wants to know their training paces
+    - Is starting a new training block and needs calibrated pace zones
+    - Wants to check whether their current VDOT-derived paces are still current
+    - Has just set a PR and wants updated targets
+
+    After calling this, consider calling update_profile(vdot=<value>) to persist
+    the result so future plan creation uses the correct paces.
+
+    The returned paces are in min:ss/km format. For mile-based paces, convert:
+    pace_per_mile = pace_per_km × 1.60934.
+
+    Args:
+        race_distance_km: Race distance in km (e.g. 5.0, 10.0, 21.095, 42.195)
+        race_time:        Finishing time as H:MM:SS or MM:SS (e.g. "1:45:30" or "22:15")
+    """
+    def _parse_time(t: str) -> float:
+        parts = t.strip().split(":")
+        try:
+            if len(parts) == 2:
+                return int(parts[0]) * 60 + float(parts[1])
+            if len(parts) == 3:
+                return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+        except ValueError:
+            pass
+        return -1.0
+
+    total_seconds = _parse_time(race_time)
+    if total_seconds <= 0:
+        return {"error": f"Invalid race_time {race_time!r} — use H:MM:SS or MM:SS"}
+    if race_distance_km <= 0:
+        return {"error": "race_distance_km must be positive"}
+
+    t = total_seconds / 60.0
+    d = race_distance_km * 1000.0
+    v = d / t  # velocity in m/min
+
+    pct_vo2max = 0.8 + 0.1894393 * math.exp(-0.012778 * t) + 0.2989558 * math.exp(-0.1932605 * t)
+    vo2 = -4.60 + 0.182258 * v + 0.000104 * v * v
+    vdot = vo2 / pct_vo2max
+
+    def _pace_for_pct(pct: float) -> str:
+        target_vo2 = pct * vdot
+        # solve: target_vo2 = -4.60 + 0.182258*v + 0.000104*v^2
+        # 0.000104*v^2 + 0.182258*v + (-4.60 - target_vo2) = 0
+        a, b, c = 0.000104, 0.182258, -4.60 - target_vo2
+        disc = b * b - 4 * a * c
+        if disc < 0:
+            return "N/A"
+        v_pace = (-b + math.sqrt(disc)) / (2 * a)
+        pace_min_per_km = 1000.0 / v_pace
+        mins = int(pace_min_per_km)
+        secs = round((pace_min_per_km - mins) * 60)
+        if secs == 60:
+            mins += 1
+            secs = 0
+        return f"{mins}:{secs:02d}/km"
+
+    paces = {
+        "E":  (_pace_for_pct(0.65), "Easy / long run — conversational, Z1-Z2 HR"),
+        "M":  (_pace_for_pct(0.75), "Marathon pace — comfortably hard, 75% VDOT"),
+        "T":  (_pace_for_pct(0.88), "Threshold / tempo — 20–30 min sustained, 88%"),
+        "I":  (_pace_for_pct(0.98), "Interval / VO2max — 3–5 min reps, 98%"),
+        "R":  (_pace_for_pct(1.05), "Repetition / strides — short fast reps, 105%"),
+    }
+
+    result: dict = {
+        "vdot": round(vdot, 1),
+        "race_distance_km": race_distance_km,
+        "race_time": race_time,
+        "training_paces": {k: {"pace": v[0], "use": v[1]} for k, v in paces.items()},
+        "guidance": (
+            "Use E pace for easy runs and long runs. "
+            "T pace for tempo and cruise intervals (3–5 min per rep or 20 min continuous). "
+            "I pace for VO2max intervals (3–5 min reps at 1:1 work:rest). "
+            "R pace for short repetitions and strides (200–400 m, full recovery). "
+            "M pace for marathon-specific sessions only. "
+            "Call update_profile(vdot=<value>) to store VDOT for future plan creation."
+        ),
+    }
+    log.info("VDOT calculated: %.1f from %s km in %s", vdot, race_distance_km, race_time)
+    return result
 
 
 @mcp.tool()
