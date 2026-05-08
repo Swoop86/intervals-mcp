@@ -2150,3 +2150,148 @@ class TestSetHrZoneBreakpoints:
             from mcp_server import set_hr_zone_breakpoints
             result = await set_hr_zone_breakpoints("Run", [99, 78, 87])
         assert "error" in result
+
+
+@pytest.mark.asyncio
+class TestCalculateVdot:
+    async def test_5k_result_returns_vdot(self):
+        from mcp_server import calculate_vdot
+        result = await calculate_vdot(5.0, "22:00")
+        assert "vdot" in result
+        assert result["vdot"] > 0
+
+    async def test_paces_all_present(self):
+        from mcp_server import calculate_vdot
+        result = await calculate_vdot(10.0, "45:00")
+        paces = result["training_paces"]
+        for zone in ("E", "M", "T", "I", "R"):
+            assert zone in paces
+            assert "/km" in paces[zone]["pace"]
+
+    async def test_faster_race_gives_higher_vdot(self):
+        from mcp_server import calculate_vdot
+        slow = await calculate_vdot(10.0, "55:00")
+        fast = await calculate_vdot(10.0, "40:00")
+        assert fast["vdot"] > slow["vdot"]
+
+    async def test_r_pace_faster_than_e_pace(self):
+        from mcp_server import calculate_vdot
+
+        def pace_to_seconds(pace_str: str) -> float:
+            p = pace_str.replace("/km", "").strip()
+            parts = p.split(":")
+            return int(parts[0]) * 60 + int(parts[1])
+
+        result = await calculate_vdot(21.1, "1:45:00")
+        e_secs = pace_to_seconds(result["training_paces"]["E"]["pace"])
+        r_secs = pace_to_seconds(result["training_paces"]["R"]["pace"])
+        assert r_secs < e_secs  # R is faster (fewer seconds per km)
+
+    async def test_invalid_time_returns_error(self):
+        from mcp_server import calculate_vdot
+        result = await calculate_vdot(10.0, "not-a-time")
+        assert "error" in result
+
+    async def test_zero_distance_returns_error(self):
+        from mcp_server import calculate_vdot
+        result = await calculate_vdot(0.0, "45:00")
+        assert "error" in result
+
+    async def test_marathon_time_mmss_format(self):
+        from mcp_server import calculate_vdot
+        result = await calculate_vdot(42.195, "3:30:00")
+        assert "vdot" in result
+        assert result["vdot"] > 30
+
+    async def test_race_details_echoed_back(self):
+        from mcp_server import calculate_vdot
+        result = await calculate_vdot(5.0, "20:00")
+        assert result["race_distance_km"] == 5.0
+        assert result["race_time"] == "20:00"
+
+
+@pytest.mark.asyncio
+class TestSetCoachingStyleNewPresets:
+    async def test_preset_pfitzinger(self, profile_paths):
+        from mcp_server import set_coaching_style
+        result = await set_coaching_style("pfitzinger")
+        assert "error" not in result
+        assert "Pfitzinger" in result["coaching_methodology"]
+
+    async def test_preset_hanson(self, profile_paths):
+        from mcp_server import set_coaching_style
+        result = await set_coaching_style("hanson")
+        assert "error" not in result
+        assert "Hanson" in result["coaching_methodology"]
+
+    async def test_preset_higdon(self, profile_paths):
+        from mcp_server import set_coaching_style
+        result = await set_coaching_style("higdon")
+        assert "error" not in result
+        assert "Higdon" in result["coaching_methodology"]
+
+    async def test_preset_first(self, profile_paths):
+        from mcp_server import set_coaching_style
+        result = await set_coaching_style("first")
+        assert "error" not in result
+        assert "FIRST" in result["coaching_methodology"]
+
+
+@pytest.mark.asyncio
+class TestRegisterRedirectUriValidation:
+    async def test_https_uri_accepted(self, client):
+        resp = await client.post("/register", json={
+            "client_name": "TestApp",
+            "redirect_uris": ["https://example.com/callback"],
+        })
+        assert resp.status_code == 201
+
+    async def test_localhost_http_accepted(self, client):
+        resp = await client.post("/register", json={
+            "client_name": "TestApp",
+            "redirect_uris": ["http://localhost:3000/callback"],
+        })
+        assert resp.status_code == 201
+
+    async def test_127_http_accepted(self, client):
+        resp = await client.post("/register", json={
+            "client_name": "TestApp",
+            "redirect_uris": ["http://127.0.0.1:8080/cb"],
+        })
+        assert resp.status_code == 201
+
+    async def test_javascript_scheme_rejected(self, client):
+        resp = await client.post("/register", json={
+            "client_name": "Evil",
+            "redirect_uris": ["javascript:alert(1)"],
+        })
+        assert resp.status_code == 400
+        assert "error" in resp.json()
+
+    async def test_data_scheme_rejected(self, client):
+        resp = await client.post("/register", json={
+            "client_name": "Evil",
+            "redirect_uris": ["data:text/html,<script>alert(1)</script>"],
+        })
+        assert resp.status_code == 400
+
+    async def test_plain_http_non_localhost_rejected(self, client):
+        resp = await client.post("/register", json={
+            "client_name": "Downgrade",
+            "redirect_uris": ["http://evil.com/callback"],
+        })
+        assert resp.status_code == 400
+
+    async def test_too_many_uris_rejected(self, client):
+        resp = await client.post("/register", json={
+            "client_name": "Spammer",
+            "redirect_uris": [f"https://example.com/cb{i}" for i in range(21)],
+        })
+        assert resp.status_code == 400
+
+    async def test_non_string_uri_rejected(self, client):
+        resp = await client.post("/register", json={
+            "client_name": "Bad",
+            "redirect_uris": [42],
+        })
+        assert resp.status_code == 400

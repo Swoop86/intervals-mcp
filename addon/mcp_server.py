@@ -1563,6 +1563,39 @@ if not READ_ONLY:
         Example T=5:30: 15 min wu(7:09) + 25 min tempo(6:16) + 10 min cd(7:09)
           → 15/7.15 + 25/6.27 + 10/7.15 = 2.1 + 4.0 + 1.4 = 7.5 km
 
+        NO RACE GOAL — how to handle "improve / maintain fitness" requests
+        ─────────────────────────────────────────
+        When the athlete says "just improve my fitness", "make me a plan", or
+        "maintain my fitness" — without a race goal — follow this template:
+
+        Step 1 — Determine intent:
+          "Improve" → build CTL by 4–5 pts/week over a 4–6 week block.
+          "Maintain" → hold CTL flat (±2 pts), vary sessions for freshness.
+          When unclear, ask: "Are you training toward a specific race or event,
+          or just building general fitness right now?"
+
+        Step 2 — Choose block length:
+          No goal → default to a 4-week block (3 build + 1 cutback).
+          Current CTL < 30: 4-week base build (all easy + long run).
+          CTL 30–60:        4-week mixed (easy + 1 quality/week).
+          CTL > 60:         maintenance or polarized quality block.
+
+        Step 3 — Default weekly structure (adjust for methodology):
+          Day 1: Rest or cross-training
+          Day 2: Easy run (40–50 min, %LTHR Z1–Z2)
+          Day 3: Quality session (tempo / threshold / strides, based on CTL)
+          Day 4: Easy run (30–40 min) or rest
+          Day 5: Medium-long run (60–75 min, easy pace)
+          Day 6: Quality session 2 (VO2max intervals or hill repeats if CTL > 40)
+          Day 7: Long run (70–90 min easy)
+
+          Week 4 (cutback): cut all sessions to 70% of week 3 volume.
+
+        Step 4 — Confirm with athlete before creating:
+          "I'm thinking a 4-week improvement block: easy + long run base with
+           one threshold session/week. Want me to build that out, or adjust
+           the session types / days?"
+
         SKELETON-FIRST PLAN CREATION — recommended for multi-week plans
         ─────────────────────────────────────────
         For plans longer than one week, build in two passes:
@@ -3223,6 +3256,17 @@ async def handle_register(request: Request) -> Response:
     redirect_uris = body.get("redirect_uris")
     if not redirect_uris or not isinstance(redirect_uris, list):
         return JSONResponse({"error": "invalid_redirect_uri"}, status_code=400)
+    if len(redirect_uris) > 20:
+        return JSONResponse({"error": "invalid_redirect_uri", "error_description": "too many redirect_uris"}, status_code=400)
+    for uri in redirect_uris:
+        if not isinstance(uri, str):
+            return JSONResponse({"error": "invalid_redirect_uri"}, status_code=400)
+        lu = uri.lower()
+        if not (lu.startswith("https://") or lu.startswith("http://localhost") or lu.startswith("http://127.0.0.1")):
+            return JSONResponse(
+                {"error": "invalid_redirect_uri", "error_description": "only https:// and http://localhost/127.0.0.1 URIs are permitted"},
+                status_code=400,
+            )
 
     client_id = _gen_token(16)
     async with _oauth_lock:
